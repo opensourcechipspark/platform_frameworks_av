@@ -40,6 +40,35 @@ unsigned parseUE(ABitReader *br) {
     return x + (1u << numZeroes) - 1;
 }
 
+uint8_t scan2raster[16]  =
+{
+    0,  1,  4,  8,  5,  2,  3,  6,  9, 12, 13, 10,  7, 11, 14, 15
+};
+uint8_t scan2raster8[64] =
+{
+     0,  1,  8, 16,  9,  2,  3, 10, 17, 24, 32, 25, 18, 11,  4,  5,
+    12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13,  6,  7, 14, 21, 28,
+    35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51,
+    58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63
+};
+void read_scaling_list(ABitReader *br, int32_t is8x8)
+{
+    int32_t  j, scanj, loop = (is8x8) ? (64) : (16);
+    int32_t  delta_scale, lastScale, nextScale;
+    uint8_t *tab = (is8x8) ? (&scan2raster8[0]) : (&scan2raster[0]);
+    lastScale      = 8;
+    nextScale      = 8;
+    for (j = 0; j < loop; j++)
+    {
+        scanj = tab[j];
+        if (nextScale != 0)
+        {
+            delta_scale = parseUE(br);
+            nextScale = (lastScale + delta_scale + 256) & 0xFF;
+        }
+        lastScale = (nextScale == 0) ? lastScale : nextScale;
+    }
+}
 // Determine video dimensions from the sequence parameterset.
 void FindAVCDimensions(
         const sp<ABuffer> &seqParamSet,
@@ -56,6 +85,7 @@ void FindAVCDimensions(
     if (profile_idc == 100 || profile_idc == 110
             || profile_idc == 122 || profile_idc == 244
             || profile_idc == 44 || profile_idc == 83 || profile_idc == 86) {
+        uint32_t temp = 0;
         chroma_format_idc = parseUE(&br);
         if (chroma_format_idc == 3) {
             br.skipBits(1);  // residual_colour_transform_flag
@@ -63,7 +93,23 @@ void FindAVCDimensions(
         parseUE(&br);  // bit_depth_luma_minus8
         parseUE(&br);  // bit_depth_chroma_minus8
         br.skipBits(1);  // qpprime_y_zero_transform_bypass_flag
-        CHECK_EQ(br.getBits(1), 0u);  // seq_scaling_matrix_present_flag
+        temp = br.getBits(1);  // seq_scaling_matrix_present_flag
+        if(temp)
+        {
+            int32_t i;
+            for (i = 0; i < 6; i++) {
+		        temp = br.getBits(1); ;
+                if (temp) {
+                    read_scaling_list(&br, 0);
+                }
+            }
+	        for (i = 0; i < 2; i++) {
+		        temp = br.getBits(1); ;
+                if (temp) {
+                    read_scaling_list(&br, 1);
+                }
+            }
+        }
     }
 
     parseUE(&br);  // log2_max_frame_num_minus4
@@ -305,8 +351,9 @@ sp<MetaData> MakeAVCCodecSpecificData(const sp<ABuffer> &accessUnit) {
 
     size_t stopOffset;
     sp<ABuffer> picParamSet = FindNAL(data, size, 8, &stopOffset);
-    CHECK(picParamSet != NULL);
-
+    if(picParamSet == NULL){
+        return NULL;
+    }
     size_t csdSize =
         1 + 3 + 1 + 1
         + 2 * 1 + seqParamSet->size()
@@ -373,6 +420,67 @@ sp<MetaData> MakeAVCCodecSpecificData(const sp<ABuffer> &accessUnit) {
     }
 
     return meta;
+}
+int MakeAVCCodecSpecificData_Wimo(const sp<ABuffer> &accessUnit,const sp<MetaData> &mFormat) {
+    const uint8_t *data = accessUnit->data();
+    size_t size = accessUnit->size();
+
+    sp<ABuffer> seqParamSet = FindNAL(data, size, 7, NULL);
+    if (seqParamSet == NULL) {
+        return 0;
+    }
+
+    int32_t width, height;
+    int32_t sarWidth, sarHeight;
+    FindAVCDimensions(
+            seqParamSet, &width, &height, &sarWidth, &sarHeight);
+
+    size_t stopOffset;
+    sp<ABuffer> picParamSet = FindNAL(data, size, 8, &stopOffset);
+    CHECK(picParamSet != NULL);
+
+    size_t csdSize =
+        1 + 3 + 1 + 1
+        + 2 * 1 + seqParamSet->size()
+        + 1 + 2 * 1 + picParamSet->size();
+
+    sp<ABuffer> csd = new ABuffer(csdSize);
+    uint8_t *out = csd->data();
+
+    *out++ = 0x01;  // configurationVersion
+    memcpy(out, seqParamSet->data() + 1, 3);  // profile/level...
+    out += 3;
+    *out++ = (0x3f << 2) | 1;  // lengthSize == 2 bytes
+    *out++ = 0xe0 | 1;
+
+    *out++ = seqParamSet->size() >> 8;
+    *out++ = seqParamSet->size() & 0xff;
+    memcpy(out, seqParamSet->data(), seqParamSet->size());
+    out += seqParamSet->size();
+
+    *out++ = 1;
+
+    *out++ = picParamSet->size() >> 8;
+    *out++ = picParamSet->size() & 0xff;
+    memcpy(out, picParamSet->data(), picParamSet->size());
+
+#if 0
+    ALOGI("AVC seq param set");
+    hexdump(seqParamSet->data(), seqParamSet->size());
+#endif
+
+    mFormat->setCString(kKeyMIMEType, MEDIA_MIMETYPE_VIDEO_AVC);
+
+    mFormat->setData(kKeyAVCC, 0, csd->data(), csd->size());
+    mFormat->setInt32(kKeyWidth, width);
+    mFormat->setInt32(kKeyHeight, height);
+	struct timeval timeFirst;
+		
+			gettimeofday(&timeFirst, NULL);			 
+
+    ALOGI("found AVC codec config (%d x %d) time %lld", width, height,(int64_t)timeFirst.tv_sec * 1000000ll + timeFirst.tv_usec);
+
+    return 1;
 }
 
 bool IsIDR(const sp<ABuffer> &buffer) {

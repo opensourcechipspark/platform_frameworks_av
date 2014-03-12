@@ -41,27 +41,38 @@ struct AnotherPacketSource : public MediaSource {
     virtual status_t read(
             MediaBuffer **buffer, const ReadOptions *options = NULL);
 
-    void clear();
-
     bool hasBufferAvailable(status_t *finalResult);
-
+	
+	int64_t getCurrentPackTime();
+	
     // Returns the difference between the last and the first queued
     // presentation timestamps since the last discontinuity (if any).
     int64_t getBufferedDurationUs(status_t *finalResult);
 
+    uint32_t numBufferAvailable(int32_t *mUseMem = NULL);
     status_t nextBufferTime(int64_t *timeUs);
 
     void queueAccessUnit(const sp<ABuffer> &buffer);
 
+	 void queueAccessUnit(MediaBuffer *buffer);
     void queueDiscontinuity(
             ATSParser::DiscontinuityType type, const sp<AMessage> &extra);
 
     void signalEOS(status_t result);
-
+    void setLastTime(uint64_t timeus);
+	uint32_t  quen_memUsed;
+    uint32_t quen_num;
     status_t dequeueAccessUnit(sp<ABuffer> *buffer);
-
+	void clear();
+    bool mVideoFlag;
+    bool mIsAudio;
+    bool discontinuityFlag;
     bool isFinished(int64_t duration) const;
-
+    int32_t mType;
+    uint32_t mProgramID;
+    unsigned mElementaryPID;
+    uint64_t lastTimestamp;
+    bool IsAbufferFlag;
 protected:
     virtual ~AnotherPacketSource();
 
@@ -69,10 +80,10 @@ private:
     Mutex mLock;
     Condition mCondition;
 
-    bool mIsAudio;
     sp<MetaData> mFormat;
     int64_t mLastQueuedTimeUs;
     List<sp<ABuffer> > mBuffers;
+    Vector<MediaBuffer *> mMediaBuffers;
     status_t mEOSResult;
 
     bool wasFormatChange(int32_t discontinuityType) const;

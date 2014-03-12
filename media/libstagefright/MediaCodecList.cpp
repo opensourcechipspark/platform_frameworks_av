@@ -24,6 +24,7 @@
 #include <media/stagefright/MediaErrors.h>
 #include <media/stagefright/OMXClient.h>
 #include <media/stagefright/OMXCodec.h>
+#include <media/stagefright/MediaDefs.h>
 #include <utils/threads.h>
 
 #include <libexpat/expat.h>
@@ -61,9 +62,34 @@ MediaCodecList::MediaCodecList()
         // These are currently still used by the video editing suite.
 
         addMediaCodec(true /* encoder */, "AACEncoder", "audio/mp4a-latm");
+        addMediaCodec(true /* encoder */, "OMX.rk.video_encoder.avc", "video/avc");
+        addMediaCodec(true /* encoder */, "RkOn2Encoder", "video/avc");
 
-        addMediaCodec(
-                false /* encoder */, "OMX.google.raw.decoder", "audio/raw");
+        addMediaCodec(false /* encoder */, "OMX.google.raw.decoder", "audio/raw");
+        addMediaCodec(false /* encoder */, "OMX.google.mp3.decoder",MEDIA_MIMETYPE_AUDIO_MPEG);
+		//the follow codec on the librk_audio.so
+        addMediaCodec(false /* encoder */, "RkAudioDecoder_DTS", MEDIA_MIMETYPE_AUDIO_DTS);
+        addMediaCodec(false /* encoder */, "RkAudioDecoder_WMA", MEDIA_MIMETYPE_AUDIO_WMA);
+        addMediaCodec(false /* encoder */, "RkAudioDecoder_WMAPRO",MEDIA_MIMETYPE_AUDIO_WMAPRO);
+        addMediaCodec(false /* encoder */, "RkAudioDecoder_AC3", MEDIA_MIMETYPE_AUDIO_AC3);
+        addMediaCodec(false /* encoder */, "RkAudioDecoder_RA", MEDIA_MIMETYPE_AUDIO_RA);
+		addMediaCodec(false /* encoder */, "RkAudioDecoder_WAV", MEDIA_MIMETYPE_AUDIO_WAV);
+		
+        addMediaCodec(false /* encoder */, "FLACDecoder", MEDIA_MIMETYPE_AUDIO_FLAC);
+		addMediaCodec(false /* encoder */, "AVCDecoder_FLASH", MEDIA_MIMETYPE_VIDEO_AVC);
+        addMediaCodec(false /* encoder */, "AACDecoder", MEDIA_MIMETYPE_AUDIO_AAC);
+        addMediaCodec(false /* encoder */, "AACDecoder_MIRRORING", MEDIA_MIMETYPE_AUDIO_AAC);
+        addMediaCodec(false /* encoder */, "RkOn2Decoder", MEDIA_MIMETYPE_VIDEO_AVC);
+        addMediaCodec(false /* encoder */, "RkOn2Decoder", MEDIA_MIMETYPE_VIDEO_REALVIDEO);
+        addMediaCodec(false /* encoder */, "RkOn2Decoder", MEDIA_MIMETYPE_VIDEO_FLV);
+        addMediaCodec(false /* encoder */, "RkOn2Decoder", MEDIA_MIMETYPE_VIDEO_MPEG2);
+        addMediaCodec(false /* encoder */, "RkOn2Decoder", MEDIA_MIMETYPE_VIDEO_VC1);
+        addMediaCodec(false /* encoder */, "RkOn2Decoder", MEDIA_MIMETYPE_VIDEO_H263);
+        addMediaCodec(false /* encoder */, "RkOn2Decoder", MEDIA_MIMETYPE_VIDEO_MPEG4);
+        addMediaCodec(false /* encoder */, "RkOn2Decoder", MEDIA_MIMETYPE_VIDEO_MJPEG);
+        addMediaCodec(false /* encoder */, "RkOn2Decoder", MEDIA_MIMETYPE_VIDEO_VP6);
+        addMediaCodec(false /* encoder */, "RkOn2Decoder", MEDIA_MIMETYPE_VIDEO_VP8);
+		addMediaCodec(false /* encoder */, "HEVCDecoder", MEDIA_MIMETYPE_VIDEO_HEVC);
     }
 
 #if 0

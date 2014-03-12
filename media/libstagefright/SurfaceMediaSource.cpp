@@ -33,8 +33,25 @@
 
 #include <private/gui/ComposerService.h>
 
-namespace android {
+#include <sys/ioctl.h>
+#include "rga.h"
+#include <fcntl.h>
+#include <poll.h>
+#include <ui/Rect.h>
+#include <ui/GraphicBufferMapper.h>
+#include "vpu_mem.h"
+#include <ui/DisplayInfo.h>
 
+#include <gui/ISurfaceComposer.h>
+#include <gui/SurfaceComposerClient.h>
+#include <cutils/properties.h>
+
+#define	SURFACE_ORIGINAL_SIZE 1
+namespace android {
+FILE *omx_txt = NULL;
+FILE * omx_RGB ;
+int64_t video_source_num;
+int64_t last_video_source_num;
 SurfaceMediaSource::SurfaceMediaSource(uint32_t bufferWidth, uint32_t bufferHeight) :
     mWidth(bufferWidth),
     mHeight(bufferHeight),
@@ -48,17 +65,36 @@ SurfaceMediaSource::SurfaceMediaSource(uint32_t bufferWidth, uint32_t bufferHeig
     mFirstFrameTimestamp(0),
     mMaxAcquiredBufferCount(4),  // XXX double-check the default
     mUseAbsoluteTimestamps(false) {
+    property_set("sys_graphic.wfdstatus","true");
+    char pro_value[PROPERTY_VALUE_MAX];
+    int surface_wait_count = 0;
+    property_get("sys.dump",pro_value,"0");
+    while(strcmp(pro_value,"true") && surface_wait_count < 10)
+    {
+      ++surface_wait_count;
+	property_get("sys.dump",pro_value,"0");
+  	  usleep(5000);
+    }
     ALOGV("SurfaceMediaSource");
 
+	#ifdef	FOR_TCL
+	orig_width 			= (bufferWidth * 96 / 100) & 0xfff0;// 32 pixel aligned in width
+	orig_height 		= (bufferHeight * 96 / 100) & 0xfff0;//16 pixel aligned in height
+	#else
+	orig_width 			= bufferWidth;// 32 pixel aligned in width
+	orig_height 		= bufferHeight;//16 pixel aligned in height
+	#endif
     if (bufferWidth == 0 || bufferHeight == 0) {
         ALOGE("Invalid dimensions %dx%d", bufferWidth, bufferHeight);
     }
 
     mBufferQueue = new BufferQueue();
-    mBufferQueue->setDefaultBufferSize(bufferWidth, bufferHeight);
+    mBufferQueue->setDefaultBufferSize(orig_width, orig_height);
+   // mBufferQueue->setDefaultBufferSize(bufferWidth, bufferHeight);
+   // mBufferQueue->setSynchronousMode(false);
     mBufferQueue->setConsumerUsageBits(GRALLOC_USAGE_HW_VIDEO_ENCODER |
             GRALLOC_USAGE_HW_TEXTURE);
-
+	ALOGD("SurfaceMediaSource constructor async");
     sp<ISurfaceComposer> composer(ComposerService::getComposerService());
 
     // Note that we can't create an sp<...>(this) in a ctor that will not keep a
@@ -67,17 +103,22 @@ SurfaceMediaSource::SurfaceMediaSource(uint32_t bufferWidth, uint32_t bufferHeig
     // that's what we create.
     wp<ConsumerListener> listener = static_cast<ConsumerListener*>(this);
     sp<BufferQueue::ProxyConsumerListener> proxy = new BufferQueue::ProxyConsumerListener(listener);
-
+    
     status_t err = mBufferQueue->consumerConnect(proxy, false);
     if (err != NO_ERROR) {
         ALOGE("SurfaceMediaSource: error connecting to BufferQueue: %s (%d)",
                 strerror(-err), err);
     }
+	 ALOGD("SurfaceMediaSource bufferWidth %d bufferHeight %d orig_width %d orig_height %d",
+		bufferWidth
+		,bufferHeight,orig_width,orig_height);
 }
 
 SurfaceMediaSource::~SurfaceMediaSource() {
     ALOGV("~SurfaceMediaSource");
     CHECK(!mStarted);
+	 property_set("sys_graphic.wfdstatus","flase");
+    ALOGD("%s", "sys_graphic.wfdstatus is set to false modify by lance 2013.07.05");  // add by lance 2013.07.05
 }
 
 nsecs_t SurfaceMediaSource::getTimestamp() {
@@ -146,7 +187,7 @@ status_t SurfaceMediaSource::start(MetaData *params)
         if (params->findInt64(kKeyTime, &startTimeUs)) {
             mStartTimeNs = startTimeUs * 1000;
         }
-
+        ALOGD("SurfaceMediaSource::start before kKeyNumBuffers");
         if (!params->findInt32(kKeyNumBuffers, &bufferCount)) {
             ALOGE("Failed to find the advertised buffer count");
             return UNKNOWN_ERROR;
@@ -159,7 +200,8 @@ status_t SurfaceMediaSource::start(MetaData *params)
 
         mMaxAcquiredBufferCount = bufferCount;
     }
-
+    else
+      ALOGD("SurfaceMediaSource::start no param mMaxAcquiredBufferCount %d",mMaxAcquiredBufferCount);
     CHECK_GT(mMaxAcquiredBufferCount, 1);
 
     status_t err =
@@ -168,7 +210,9 @@ status_t SurfaceMediaSource::start(MetaData *params)
     if (err != OK) {
         return err;
     }
-
+   // mBufferQueue->setSynchronousMode(false);
+   ALOGD("SurfaceMediaSource start syncmode %d mMaxAcquiredBufferCount %d synchronousMode false",
+		mBufferQueue.get(),mMaxAcquiredBufferCount);
     mNumPendingBuffers = 0;
     mStarted = true;
 
@@ -176,7 +220,7 @@ status_t SurfaceMediaSource::start(MetaData *params)
 }
 
 status_t SurfaceMediaSource::setMaxAcquiredBufferCount(size_t count) {
-    ALOGV("setMaxAcquiredBufferCount(%d)", count);
+    ALOGD("setMaxAcquiredBufferCount(%d)", count);
     Mutex::Autolock lock(mMutex);
 
     CHECK_GT(count, 1);
@@ -195,7 +239,7 @@ status_t SurfaceMediaSource::setUseAbsoluteTimestamps() {
 
 status_t SurfaceMediaSource::stop()
 {
-    ALOGV("stop");
+    ALOGD("stop");
     Mutex::Autolock lock(mMutex);
 
     if (!mStarted) {
@@ -272,7 +316,7 @@ static void passMetadataBuffer(MediaBuffer **buffer,
 status_t SurfaceMediaSource::read( MediaBuffer **buffer,
                                     const ReadOptions *options)
 {
-    ALOGV("read");
+    ALOGV("read mNumPendingBuffers %d mMaxAcquiredBufferCount %d",mNumPendingBuffers,mMaxAcquiredBufferCount);
     Mutex::Autolock lock(mMutex);
 
     *buffer = NULL;
@@ -281,6 +325,8 @@ status_t SurfaceMediaSource::read( MediaBuffer **buffer,
         mMediaBuffersAvailableCondition.wait(mMutex);
     }
 
+	int64_t systime = systemTime(SYSTEM_TIME_MONOTONIC) / 1000;
+	int64_t systime3;
     // Update the current buffer info
     // TODO: mCurrentSlot can be made a bufferstate since there
     // can be more than one "current" slots.
@@ -291,9 +337,17 @@ status_t SurfaceMediaSource::read( MediaBuffer **buffer,
     while (mStarted) {
 
         status_t err = mBufferQueue->acquireBuffer(&item, 0);
+		 systime3 = systemTime(SYSTEM_TIME_MONOTONIC) / 1000;
         if (err == BufferQueue::NO_BUFFER_AVAILABLE) {
             // wait for a buffer to be queued
-            mFrameAvailableCondition.wait(mMutex);
+            int ret;
+            ret = mFrameAvailableCondition.waitRelative(mMutex,500000ll);//wait(mMutex);
+            if(-ETIMEDOUT == ret)
+            {
+            
+				return OK;
+            }
+			ALOGV("surface mediasource ETIMEDOUT ret %d",ret);
         } else if (err == OK) {
             err = item.mFence->waitForever("SurfaceMediaSource::read");
             if (err) {
@@ -320,6 +374,45 @@ status_t SurfaceMediaSource::read( MediaBuffer **buffer,
                     }
                     mStartTimeNs = item.mTimestamp - mStartTimeNs;
                 }
+            }
+			if(1)
+			{
+			  int retrtptxt;
+			  int64_t sys_time;
+			  static int64_t last_time_us = 0;
+			  static int64_t start_time_us = 0;
+			  static int64_t last_sys_time = 0;
+			  sys_time = systemTime(SYSTEM_TIME_MONOTONIC) / 1000;		
+			  if(start_time_us == 0)
+			  	start_time_us=sys_time - (mStartTimeNs + (item.mTimestamp - mFirstFrameTimestamp))/1000;
+			  if(start_time_us < sys_time -(mStartTimeNs + (item.mTimestamp - mFirstFrameTimestamp))/1000)
+				  start_time_us=sys_time - (mStartTimeNs + (item.mTimestamp - mFirstFrameTimestamp))/1000;
+			  if((retrtptxt = access("data/test/omx_txt_file",0)) == 0)//test_file!=NULL)
+			  {
+				  
+				  if(omx_txt == NULL)
+					  omx_txt = fopen("data/test/omx_txt.txt","ab");
+				  if(omx_txt != NULL)
+				  {
+					fprintf(omx_txt,"SurfaceMediaSource::read Video sys_time %lld mStartTimeNs %lld %lld timeUs %lld %lld delta %lld %lld  %lld buffer_handle %x video_source_num %d %d %d mNumFramesReceived %d setMaxAcquiredBufferCount %d mNumPendingBuffers %d %x\n",
+						sys_time,start_time_us ,mStartTimeNs,item.mTimestamp/1000,( mStartTimeNs + (item.mTimestamp - mFirstFrameTimestamp))/1000 ,
+						(( mStartTimeNs + (item.mTimestamp - mFirstFrameTimestamp)) - last_time_us)/1000
+						,sys_time - start_time_us -(mStartTimeNs + (item.mTimestamp - mFirstFrameTimestamp)) / 1000,
+						sys_time - last_sys_time,mSlots[item.mBuf].mGraphicBuffer ->handle,last_video_source_num,video_source_num,
+						video_source_num-last_video_source_num,
+						mNumFramesReceived,mMaxAcquiredBufferCount,mNumPendingBuffers,*buffer);
+					ALOGV("SurfaceMediaSource::read Video sys_time %lld mStartTimeNs %lld %lld timeUs %lld delta %lld %lld  %lld buffer_handle %x video_source_num %d %d %d mNumFramesReceived %d setMaxAcquiredBufferCount %d mNumPendingBuffers %d %x\n",
+						sys_time,start_time_us ,mStartTimeNs,( mStartTimeNs + (item.mTimestamp - mFirstFrameTimestamp))/1000 ,
+						(( mStartTimeNs + (item.mTimestamp - mFirstFrameTimestamp)) - last_time_us)/1000
+						,sys_time - start_time_us -(mStartTimeNs + (item.mTimestamp - mFirstFrameTimestamp)) / 1000,
+						sys_time - last_sys_time,mSlots[item.mBuf].mGraphicBuffer ->handle,last_video_source_num,video_source_num,
+						video_source_num-last_video_source_num,
+						mNumFramesReceived,mMaxAcquiredBufferCount,mNumPendingBuffers,*buffer);
+					fflush(omx_txt);
+				  }
+			  }
+			  last_sys_time = sys_time;
+			  last_time_us = mStartTimeNs + (item.mTimestamp - mFirstFrameTimestamp);
             }
             item.mTimestamp = mStartTimeNs + (item.mTimestamp - mFirstFrameTimestamp);
 
@@ -349,13 +442,14 @@ status_t SurfaceMediaSource::read( MediaBuffer **buffer,
     mSlots[item.mBuf].mFrameNumber = item.mFrameNumber;
 
     mCurrentBuffers.push_back(mSlots[mCurrentSlot].mGraphicBuffer);
+	passMetadataBuffer(buffer, mSlots[mCurrentSlot].mGraphicBuffer->handle);
     int64_t prevTimeStamp = mCurrentTimestamp;
     mCurrentTimestamp = item.mTimestamp;
 
     mNumFramesEncoded++;
     // Pass the data to the MediaBuffer. Pass in only the metadata
 
-    passMetadataBuffer(buffer, mSlots[mCurrentSlot].mGraphicBuffer->handle);
+	ALOGV("passMetadataBuffer %d %x",(*buffer)->refcount(),*buffer);
 
     (*buffer)->setObserver(this);
     (*buffer)->add_ref();
@@ -398,8 +492,45 @@ void SurfaceMediaSource::signalBufferReturned(MediaBuffer *buffer) {
             foundBuffer = true;
             break;
         }
-    }
-
+		}
+	{
+	  int retrtptxt;
+	  int64_t sys_time;
+	  static int64_t last_time_us = 0;
+	  static int64_t start_time_us = 0;
+	  static int64_t last_sys_time = 0;
+	  int64_t timeUs;
+	  sys_time = systemTime(SYSTEM_TIME_MONOTONIC) / 1000;		
+	  (buffer)->meta_data()->findInt64(kKeyTime, &timeUs);
+	  if(start_time_us == 0)
+	  	start_time_us=sys_time - timeUs;
+	  if(start_time_us < sys_time -timeUs)
+		  start_time_us=sys_time - timeUs;  
+	  if((retrtptxt = access("data/test/omx_txt_file",0)) == 0)//test_file!=NULL)
+	  {
+		  
+		  if(omx_txt == NULL)
+			  omx_txt = fopen("data/test/omx_txt.txt","ab");
+		  if(omx_txt != NULL)
+		  {
+			fprintf(omx_txt,"SurfaceMediaSource::signalBufferReturned   Video sys_time %lld mStartTimeNs %lld %lld timeUs %lld delta %lld %lld  %lld buffer_handle %x mNumFramesReceived %d\n",
+				sys_time,start_time_us ,mStartTimeNs,timeUs ,
+				(timeUs - last_time_us)
+				,sys_time - start_time_us -timeUs,
+				sys_time - last_sys_time,bufferHandle, 
+				mNumFramesReceived);
+			ALOGV("BufferQueue signalBufferReturned SurfaceMediaSource::read Video sys_time %lld mStartTimeNs %lld %lld timeUs %lld delta %lld %lld  %lld buffer_handle %x mNumPendingBuffers %d mNumFramesReceived %d\n",
+				sys_time,start_time_us ,mStartTimeNs,timeUs ,
+				(timeUs - last_time_us)
+				,sys_time - start_time_us -timeUs,
+				sys_time - last_sys_time,bufferHandle,mNumPendingBuffers,
+				mNumFramesReceived);
+			fflush(omx_txt);
+		  }
+	  }
+	  last_sys_time = sys_time;
+	  last_time_us = timeUs;
+	}
     if (!foundBuffer) {
         ALOGW("returned buffer was not found in the current buffer list");
     }
@@ -444,8 +575,11 @@ void SurfaceMediaSource::signalBufferReturned(MediaBuffer *buffer) {
 
 // Part of the BufferQueue::ConsumerListener
 void SurfaceMediaSource::onFrameAvailable() {
-    ALOGV("onFrameAvailable");
-
+	static int64_t last_time=0;
+	int64_t systime = systemTime(SYSTEM_TIME_MONOTONIC) / 1000;
+    ALOGV("onFrameAvailable time %lld %lld delta %lld",
+		last_time,systime,systime-last_time);
+	last_time = systime;
     sp<FrameAvailableListener> listener;
     { // scope for the lock
         Mutex::Autolock lock(mMutex);

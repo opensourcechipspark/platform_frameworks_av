@@ -184,6 +184,11 @@ void ALooper::post(const sp<AMessage> &msg, int64_t delayUs) {
     mEventQueue.insert(it, event);
 }
 
+void ALooper::clearMessage() {
+    Mutex::Autolock autoLock(mLock);
+    mEventQueue.clear();
+  ALOGI("mEventQueue.clear() : mEventQueue.size(): %d", mEventQueue.size());
+}
 bool ALooper::loop() {
     Event event;
 

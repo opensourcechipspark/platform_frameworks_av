@@ -559,17 +559,23 @@ void ID3::Iterator::getstring(String8 *id, bool otherdata) const {
         }
         n -= skipped;
     }
+	if(n < 0)
+		n = 0;
 
     if (encoding == 0x00) {
         // ISO 8859-1
         convertISO8859ToString8(frameData + 1, n, id);
     } else if (encoding == 0x03) {
         // UTF-8
-        id->setTo((const char *)(frameData + 1), n);
+		String8 value("rkutf8");
+		value.append((const char *)(frameData + 1), n);
+        id->setTo(value.string(),n+6);
     } else if (encoding == 0x02) {
         // UTF-16 BE, no byte order mark.
         // API wants number of characters, not number of bytes...
         int len = n / 2;
+        int rklen = len + 6;//need add rkutf8 tag
+        char16_t *rkframedata = new char16_t[rklen];
         const char16_t *framedata = (const char16_t *) (frameData + 1);
         char16_t *framedatacopy = NULL;
 #if BYTE_ORDER == LITTLE_ENDIAN
@@ -579,17 +585,28 @@ void ID3::Iterator::getstring(String8 *id, bool otherdata) const {
         }
         framedata = framedatacopy;
 #endif
-        id->setTo(framedata, len);
+        rkframedata[0]='r';
+        rkframedata[1]='k';
+        rkframedata[2]='u';
+        rkframedata[3]='t';
+        rkframedata[4]='f';
+        rkframedata[5]='8';
+        memcpy(rkframedata+6,framedata, len*sizeof(char16_t));
+        id->setTo(rkframedata, rklen);
         if (framedatacopy != NULL) {
             delete[] framedatacopy;
         }
+        if(rkframedata)
+        	 delete[]rkframedata;
     } else {
         // UCS-2
         // API wants number of characters, not number of bytes...
         int len = n / 2;
         const char16_t *framedata = (const char16_t *) (frameData + 1);
         char16_t *framedatacopy = NULL;
+		bool isUCS2 = false;
         if (*framedata == 0xfffe) {
+			isUCS2 = true;
             // endianness marker doesn't match host endianness, convert
             framedatacopy = new char16_t[len];
             for (int i = 0; i < len; i++) {
@@ -599,12 +616,35 @@ void ID3::Iterator::getstring(String8 *id, bool otherdata) const {
         }
         // If the string starts with an endianness marker, skip it
         if (*framedata == 0xfeff) {
+			isUCS2 = true;
             framedata++;
             len--;
         }
-        id->setTo(framedata, len);
+        char16_t *rkframedata = NULL;
+				if(isUCS2){
+							int rklen = len + 6;//need add rkutf8 tag
+							rkframedata = new char16_t[rklen];
+							int index = 0;
+							if(framedata == framedatacopy)
+							{
+								index = 1;
+								rkframedata[0] = 0xfffe;
+							}
+							rkframedata[index+0]='r';
+			        rkframedata[index+1]='k';
+			        rkframedata[index+2]='u';
+			        rkframedata[index+3]='t';
+			        rkframedata[index+4]='f';
+			        rkframedata[index+5]='8';
+			        memcpy(rkframedata+6+index,framedata+index, (len-index)*sizeof(char16_t));
+        			id->setTo(rkframedata, rklen);
+				}else//if not is UCS-2, fixed it ISO8859
+						convertISO8859ToString8(frameData + 1, n, id);
         if (framedatacopy != NULL) {
             delete[] framedatacopy;
+        }
+        if(rkframedata != NULL){
+        		delete[] rkframedata;
         }
     }
 }

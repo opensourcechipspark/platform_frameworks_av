@@ -134,6 +134,9 @@ status_t HTTPBase::setBandwidthStatCollectFreq(int32_t freqMs) {
     mBandWidthCollectFreqMs = freqMs;
     return OK;
 }
+String8 HTTPBase::getRealUrl(){
+	return String8("");
+}
 
 void HTTPBase::setUID(uid_t uid) {
     mUIDValid = true;

@@ -7,7 +7,12 @@ LOCAL_SRC_FILES:=                     \
 
 LOCAL_C_INCLUDES := \
         $(TOP)/frameworks/native/include/media/openmax \
-        $(TOP)/hardware/msm7k
+        $(TOP)/hardware/msm7k \
+        $(TOP)/hardware/rk29/libyuvtorgb \
+        $(TOP)/frameworks/av/media/libstagefright/libvpu/common/include \
+        $(TOP)/frameworks/av/media/libstagefright/libvpu/common \
+        $(TOP)/frameworks/av/media/libstagefright/include \
+        $(TOP)/frameworks/av/media/libstagefright
 
 LOCAL_MODULE:= libstagefright_color_conversion
 

@@ -779,12 +779,17 @@ M4OSA_ERR VideoEditorPreviewController::clearSurface(
      (M4OSA_UInt32)outBufferStride, (M4VIFI_UInt8 *)outBuffer);
 
     /* Fill the surface with black frame */
-    memset((void *)planeOut[0].pac_data,0x00,planeOut[0].u_width *
-                            planeOut[0].u_height * 1.5);
-    memset((void *)planeOut[1].pac_data,128,planeOut[1].u_width *
-                            planeOut[1].u_height);
-    memset((void *)planeOut[2].pac_data,128,planeOut[2].u_width *
-                             planeOut[2].u_height);
+    if (planeOut[0].pac_data &&
+        planeOut[1].pac_data &&
+        planeOut[2].pac_data) {
+
+        memset((void *)planeOut[0].pac_data,0x00,planeOut[0].u_width *
+                                planeOut[0].u_height * 1.5);
+        memset((void *)planeOut[1].pac_data,128,planeOut[1].u_width *
+                                planeOut[1].u_height);
+        memset((void *)planeOut[2].pac_data,128,planeOut[2].u_width *
+                                 planeOut[2].u_height);
+    }
 
     mTarget->renderYV12();
     return err;

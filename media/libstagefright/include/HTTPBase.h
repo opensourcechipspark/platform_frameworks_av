@@ -47,6 +47,7 @@ struct HTTPBase : public DataSource {
     virtual status_t getEstimatedBandwidthKbps(int32_t *kbps);
 
     virtual status_t setBandwidthStatCollectFreq(int32_t freqMs);
+	virtual String8 getRealUrl();
 
     static status_t UpdateProxyConfig(
             const char *host, int32_t port, const char *exclusionList);

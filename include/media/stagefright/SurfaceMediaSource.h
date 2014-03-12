@@ -226,8 +226,15 @@ private:
     Condition mFrameAvailableCondition;
 
     Condition mMediaBuffersAvailableCondition;
-
+	int32_t rga_fd; 
+  	void **vpuenc_mem  ;
+	int32_t 	vpu_index;
+	int32_t		orig_width;
+	int32_t		orig_height;
+    Vector<void* > mCurrentBuffers_vpumem;
+    Vector<void* > mAvailBuffers_vpumem;
     // Avoid copying and equating and default constructor
+	int32_t		reserved[32];
     DISALLOW_IMPLICIT_CONSTRUCTORS(SurfaceMediaSource);
 };
 

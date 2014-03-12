@@ -32,6 +32,7 @@ LOCAL_C_INCLUDES += \
     $(TOP)/frameworks/av/media/libmediaplayerservice \
     $(TOP)/frameworks/av/media/libstagefright \
     $(TOP)/frameworks/av/media/libstagefright/include \
+    $(TOP)/hardware/rk29/libon2 \
     $(TOP)/frameworks/av/media/libstagefright/rtsp \
     $(call include-path-for, corecg graphics) \
     $(TOP)/frameworks/av/libvideoeditor/lvpp \

@@ -511,7 +511,7 @@ status_t sendMetaDataToHal(sp<MediaPlayerBase::AudioSink>& sink,
     return OK;
 }
 
-struct mime_conv_t {
+ struct mime_conv_t {
     const char* mime;
     audio_format_t format;
 };
@@ -540,7 +540,8 @@ const struct mime_conv_t* p = &mimeLookup[0];
     return BAD_VALUE;
 }
 
-bool canOffloadStream(const sp<MetaData>& meta, bool hasVideo, bool isStreaming)
+bool canOffloadStream(const sp<MetaData>& meta, bool hasVideo,
+                      bool isStreaming, audio_stream_type_t streamType)
 {
     const char *mime;
     CHECK(meta->findCString(kKeyMIMEType, &mime));
@@ -594,7 +595,7 @@ bool canOffloadStream(const sp<MetaData>& meta, bool hasVideo, bool isStreaming)
     info.bit_rate = brate;
 
 
-    info.stream_type = AUDIO_STREAM_MUSIC;
+    info.stream_type = streamType;
     info.has_video = hasVideo;
     info.is_streaming = isStreaming;
 

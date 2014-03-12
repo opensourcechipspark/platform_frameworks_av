@@ -21,7 +21,8 @@
 #include <media/stagefright/ColorConverter.h>
 #include <utils/RefBase.h>
 #include <system/window.h>
-
+#include <utils/Vector.h>
+#include "vpu_global.h"
 namespace android {
 
 struct MetaData;
@@ -48,7 +49,13 @@ private:
     int32_t mWidth, mHeight;
     int32_t mCropLeft, mCropTop, mCropRight, mCropBottom;
     int32_t mCropWidth, mCropHeight;
+	Vector<VPU_FRAME*> mStructId;
 
+    bool init_Flag;
+    int32_t rga_fd;
+    int32_t power_fd;
+	int32_t mHttpFlag;
+    int32_t mSwdecFlag;
     SoftwareRenderer(const SoftwareRenderer &);
     SoftwareRenderer &operator=(const SoftwareRenderer &);
 };

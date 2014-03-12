@@ -108,6 +108,16 @@ status_t ChromiumHTTPDataSource::connect_l(
     return mState == CONNECTED ? OK : mIOResult;
 }
 
+String8 ChromiumHTTPDataSource::getRealUrl(){
+
+	if(mDelegate)
+	{
+		//ALOGE("-->ChromiumHTTPDataSource::getRealUrl() %s",mDelegate->getRealUrl().c_str());
+		return String8(mDelegate->getRealUrl().c_str());
+	}
+	
+	return String8("");
+}
 void ChromiumHTTPDataSource::onConnectionEstablished(
         int64_t contentSize, const char *contentType) {
     Mutex::Autolock autoLock(mLock);

@@ -285,7 +285,7 @@ status_t MediaCodec::dequeueInputBuffer(size_t *index, int64_t timeoutUs) {
     }
 
     CHECK(response->findSize("index", index));
-
+  
     return OK;
 }
 
@@ -311,6 +311,7 @@ status_t MediaCodec::dequeueOutputBuffer(
     CHECK(response->findInt64("timeUs", presentationTimeUs));
     CHECK(response->findInt32("flags", (int32_t *)flags));
 
+    
     return OK;
 }
 
@@ -1500,7 +1501,6 @@ void MediaCodec::returnBuffersToCodecOnPort(int32_t portIndex) {
             info->mOwnedByClient = false;
 
             if (portIndex == kPortIndexInput) {
-                /* no error, just returning buffers */
                 msg->setInt32("err", OK);
             }
             msg->post();

@@ -261,6 +261,16 @@ void SfDelegate::setOwner(ChromiumHTTPDataSource *owner) {
 void SfDelegate::setUID(uid_t uid) {
     gReqContext->setUID(uid);
 }
+std::string SfDelegate::getRealUrl(){
+	if(mURLRequest != NULL){
+		 GURL gUrl = mURLRequest->url();
+		 if(!gUrl.is_empty())
+		 {
+			return gUrl.spec();
+		 }
+	}
+	return std::string("");
+}
 
 bool SfDelegate::getUID(uid_t *uid) const {
     return gReqContext->getUID(uid);

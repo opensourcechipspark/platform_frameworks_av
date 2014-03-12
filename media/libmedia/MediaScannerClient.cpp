@@ -27,7 +27,7 @@ namespace android {
 MediaScannerClient::MediaScannerClient()
     :   mNames(NULL),
         mValues(NULL),
-        mLocaleEncoding(kEncodingNone)
+        mLocaleEncoding(kEncodingGBK)
 {
 }
 
@@ -53,7 +53,11 @@ void MediaScannerClient::setLocale(const char* locale)
             // assume traditional for non-mainland Chinese locales (Taiwan, Hong Kong, Singapore)
             mLocaleEncoding = kEncodingBig5;
         }
-    }
+    }else if(!strncmp(locale,"ru",2)){
+    	mLocaleEncoding = kEncodingWin1251;
+	}else if(!strncmp(locale,"es",2))
+    	mLocaleEncoding = kEncodingWin1252;
+	
 }
 
 void MediaScannerClient::beginFile()
@@ -95,12 +99,14 @@ status_t MediaScannerClient::addStringTag(const char* name, const char* value)
 static uint32_t possibleEncodings(const char* s)
 {
     uint32_t result = kEncodingAll;
+	uint32_t result2 = kEncodingAll;
     // if s contains a native encoding, then it was mistakenly encoded in utf8 as if it were latin-1
     // so we need to reverse the latin-1 -> utf8 conversion to get the native chars back
     uint8_t ch1, ch2;
     uint8_t* chp = (uint8_t *)s;
 
     while ((ch1 = *chp++)) {
+		result2 = result;
         if (ch1 & 0x80) {
             ch2 = *chp++;
             ch1 = ((ch1 << 6) & 0xC0) | (ch2 & 0x3F);
@@ -115,7 +121,10 @@ static uint32_t possibleEncodings(const char* s)
         }
         // else ASCII character, which could be anything
     }
-
+	//avoid the last byte can't discern will affect the last discern result
+	if(result == kEncodingNone && result2 != kEncodingNone)
+		return result2;
+	else
     return result;
 }
 
@@ -204,20 +213,88 @@ void MediaScannerClient::endFile()
         uint32_t encoding = kEncodingAll;
 
         // compute a bit mask containing all possible encodings
-        for (int i = 0; i < mNames->size(); i++)
-            encoding &= possibleEncodings(mValues->getEntry(i));
 
-        // if the locale encoding matches, then assume we have a native encoding.
-        if (encoding & mLocaleEncoding)
-            convertValues(mLocaleEncoding);
+				char* isUtf8 = new char[size];
+				memset(isUtf8,0,size);
+				for (int i = 0; i < mNames->size(); i++)
+				{
+					   // ALOGE("I=%d ,names=%s , values=%s,mLocaleEncoding =0x%x \n",i,mNames->getEntry(i),mValues->getEntry(i),mLocaleEncoding);
+						uint32_t tmpEncoding = kEncodingAll;
+						const char * name = mNames->getEntry(i);
 
+						//when the system languge is russian ,the title/album/artist/must think it is win1251 .
+						if((mLocaleEncoding == kEncodingWin1251 || mLocaleEncoding == kEncodingWin1252) && (!strncmp(name, "tit", 3)||!strncmp(name, "alb", 3)||!strncmp(name, "art", 3)))
+							tmpEncoding = kEncodingNone;
+						else
+						  tmpEncoding = possibleEncodings(mValues->getEntry(i));
+						if(tmpEncoding == kEncodingNone)
+						{
+							ALOGI("%s value can't discern,the value is %s",mNames->getEntry(i),mValues->getEntry(i));
+							if( mLocaleEncoding == kEncodingWin1251 || mLocaleEncoding == kEncodingWin1252 )
+							{
+								//revert the string value the original string
+								 int8_t ch1, ch2;
+								 int8_t *src = (int8_t *)mValues->getEntry(i);
+								 int8_t *dst = src;
+								 while ((ch1 = *src++)) {
+								        if (ch1 & 0x80) {
+								            ch2 = *src++;
+								            ch1 = ((ch1 << 6) & 0xC0) | (ch2 & 0x3F);
+								        }
+								        
+								        *dst++ = ch1;
+								  }
+								  *dst = '\0';
+								unsigned char value[1024];
+								memset(value,0,1024);
+								if( mLocaleEncoding == kEncodingWin1251)
+									Win1251ToUtf8((unsigned char *)mValues->getEntry(i),strlen(mValues->getEntry(i)),value,1024);
+								else
+									Win1252ToUtf8((unsigned char *)mValues->getEntry(i),strlen(mValues->getEntry(i)),value,1024);
+								//ALOGI("%s value do change encode type,the value is %s",mNames->getEntry(i),value);
+								handleStringTag(name, (const char *)value);
+							}
+							else
+							{
+							//if the id3 value can't discern the encoding,we can think it is a utf8
+								handleStringTag(name, mValues->getEntry(i));
+							}
+							isUtf8[i] = 0xff; 
+							continue;
+						}
+						//LOGI("%s value is %x coding,the value is %s",mNames->getEntry(i),tmpEncoding,mValues->getEntry(i));
+						encoding &= tmpEncoding;
+				}
+
+		
+        if(encoding != kEncodingAll)
+        {
+					if(encoding == kEncodingNone)
+						encoding = mLocaleEncoding;
+					// if the locale encoding matches, then assume we have a native encoding.
+					if (encoding & mLocaleEncoding)
+					    convertValues(mLocaleEncoding);
+					else if(encoding & kEncodingEUCKR)
+						convertValues(kEncodingEUCKR);
+					else if(encoding & kEncodingGBK)
+						convertValues(kEncodingGBK);
+					else if(encoding & kEncodingBig5)
+						convertValues(kEncodingBig5);
+					else if(encoding & kEncodingShiftJIS)
+						convertValues(kEncodingShiftJIS);
+				}
+		
         // finally, push all name/value pairs to the client
-        for (int i = 0; i < mNames->size(); i++) {
+        for (int i = 0; i < mNames->size(); i++) 
+        {
+						if(isUtf8[i] == 0xff)
+							continue;
             status_t status = handleStringTag(mNames->getEntry(i), mValues->getEntry(i));
             if (status) {
                 break;
             }
         }
+		
     }
     // else addStringTag() has done all the work so we have nothing to do
 

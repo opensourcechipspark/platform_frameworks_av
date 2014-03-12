@@ -33,13 +33,23 @@ struct NuCachedSource2 : public DataSource {
             const char *cacheConfig = NULL,
             bool disconnectAtHighwatermark = false);
 
+    enum {
+        SEEKING  = 0x01,
+        LOCKRELEASE = 0x02,
+    };
+
+    enum FlagMode {
+        SET,
+        CLEAR,
+    };
+
     virtual status_t initCheck() const;
 
     virtual ssize_t readAt(off64_t offset, void *data, size_t size);
 
     virtual status_t getSize(off64_t *size);
     virtual uint32_t flags();
-
+	virtual void updatecache(off64_t offset);
     virtual sp<DecryptHandle> DrmInitialization(const char* mime);
     virtual void getDrmInfo(sp<DecryptHandle> &handle, DrmManagerClient **client);
     virtual String8 getUri();
@@ -64,6 +74,9 @@ struct NuCachedSource2 : public DataSource {
             String8 *cacheConfig,
             bool *disconnectAtHighwatermark);
 
+
+    void set_palystate(unsigned value, FlagMode mode);
+
 protected:
     virtual ~NuCachedSource2();
 
@@ -83,6 +96,7 @@ private:
     enum {
         kWhatFetchMore  = 'fetc',
         kWhatRead       = 'read',
+		kWaitRead		= 'wait'
     };
 
     enum {
@@ -101,10 +115,13 @@ private:
     off64_t mCacheOffset;
     status_t mFinalStatus;
     off64_t mLastAccessPos;
+	off64_t update_pos;
     sp<AMessage> mAsyncResult;
+    sp<AMessage> mAsyncWait;
     bool mFetching;
     int64_t mLastFetchTimeUs;
-
+    int32_t mFlag;
+    bool	seek_en;
     int32_t mNumRetriesLeft;
 
     size_t mHighwaterThresholdBytes;
@@ -118,6 +135,7 @@ private:
     void onMessageReceived(const sp<AMessage> &msg);
     void onFetch();
     void onRead(const sp<AMessage> &msg);
+	void waitRead(const sp<AMessage> &msg);
 
     void fetchInternal();
     ssize_t readInternal(off64_t offset, void *data, size_t size);

@@ -44,6 +44,14 @@ public:
     void seekToAsync(int64_t timeUs);
     void setDataSource(sp<TimedTextSource> source);
 
+    int32_t getCurFrameDuration(){
+        return mCurSubFrmDurMs;
+    }
+
+    void setTimedTextDriver(void* driver);
+
+    void notifyObserver(int msg, void* obj);
+
 protected:
     virtual void onMessageReceived(const sp<AMessage> &msg);
 
@@ -68,6 +76,10 @@ private:
     int64_t mPendingSeekTimeUs;
     bool mPaused;
     int32_t mSendSubtitleGeneration;
+
+    int32_t  mCurSubFrmDurMs;
+
+    TimedTextDriver* mDriver;
 
     void doSeekAndRead(int64_t seekTimeUs);
     void doRead(MediaSource::ReadOptions* options = NULL);

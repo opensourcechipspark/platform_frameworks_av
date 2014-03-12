@@ -52,6 +52,7 @@ struct ALooper : public RefBase {
     status_t stop();
 
     static int64_t GetNowUs();
+	void clearMessage();
 
 protected:
     virtual ~ALooper();

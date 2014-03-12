@@ -62,6 +62,14 @@ SoftMP3::~SoftMP3() {
 
     delete mConfig;
     mConfig = NULL;
+#if SUPPORT_NO_ENOUGH_MAIN_DATA
+	if(mBufExt.buf)
+	{
+		free(mBufExt.buf);
+		mBufExt.buf = NULL;
+		mBufExt.len = 0;
+	}
+#endif
 }
 
 void SoftMP3::initPorts() {
@@ -72,7 +80,7 @@ void SoftMP3::initPorts() {
     def.eDir = OMX_DirInput;
     def.nBufferCountMin = kNumBuffers;
     def.nBufferCountActual = def.nBufferCountMin;
-    def.nBufferSize = 8192;
+    def.nBufferSize = 100*1024;
     def.bEnabled = OMX_TRUE;
     def.bPopulated = OMX_FALSE;
     def.eDomain = OMX_PortDomainAudio;
@@ -116,6 +124,12 @@ void SoftMP3::initDecoder() {
 
     pvmp3_InitDecoder(mConfig, mDecoderBuf);
     mIsFirst = true;
+#if SUPPORT_NO_ENOUGH_MAIN_DATA
+	memset((void *)&mBufExt,0,sizeof(mBufExt));
+	mIsFormatChange = false;
+	mFrameCount = 0;
+	mDropFrameCount = 0;
+#endif	
 }
 
 OMX_ERRORTYPE SoftMP3::internalGetParameter(
@@ -227,6 +241,53 @@ void SoftMP3::onQueueFilled(OMX_U32 portIndex) {
             return;
         }
 
+       if (inHeader && (inHeader->nOffset == 0) && (mAnchorTimeUs != inHeader->nTimeStamp)) {
+			if((inHeader->nTimeStamp < mAnchorTimeUs)&& mNumFramesOutput < mConfig->samplingRate/2){
+				ALOGI("-->maybe timeStamp revert ,just verify one second");
+			}else{
+				//ALOGI("-->mp3 input timestamp %lld",inHeader->nTimeStamp);
+				mAnchorTimeUs = inHeader->nTimeStamp;
+				mNumFramesOutput = 0;
+			}
+			
+		}
+#if SUPPORT_NO_ENOUGH_MAIN_DATA
+			if(mIsFirst)
+			{
+				 mAnchorTimeUs = inHeader->nTimeStamp;
+           		 mNumFramesOutput = 0;
+			}
+			if(mBufExt.buf)//if buf != NULL ,the input buf always be mBufExt.buf.
+			{
+				if(inHeader->nFilledLen > 0)
+				{
+				uint32_t copyLen = 0;
+				if((TMP_BUF_SIZE -mBufExt.len) >=  inHeader->nFilledLen)
+				{
+					copyLen = inHeader->nFilledLen;
+				}
+				else
+				{
+					copyLen = TMP_BUF_SIZE -mBufExt.len;
+				}
+				uint8 * src =  (uint8_t *)inHeader->pBuffer + inHeader->nOffset;;
+				memcpy(mBufExt.buf + mBufExt.len,src,copyLen);
+				mBufExt.len += copyLen;
+				{
+					inHeader->nOffset += copyLen;
+					inHeader->nFilledLen -= copyLen;
+				}
+				}
+				mConfig->pInputBuffer = mBufExt.buf;
+				mConfig->inputBufferCurrentLength = mBufExt.len;
+			}
+			else
+			{
+				mConfig->pInputBuffer =
+           		 inHeader->pBuffer + inHeader->nOffset;
+       			 mConfig->inputBufferCurrentLength = inHeader->nFilledLen;
+			}
+#else
         if (inHeader->nOffset == 0) {
             mAnchorTimeUs = inHeader->nTimeStamp;
             mNumFramesOutput = 0;
@@ -236,6 +297,7 @@ void SoftMP3::onQueueFilled(OMX_U32 portIndex) {
             inHeader->pBuffer + inHeader->nOffset;
 
         mConfig->inputBufferCurrentLength = inHeader->nFilledLen;
+#endif
         mConfig->inputBufferMaxLength = 0;
         mConfig->inputBufferUsedLength = 0;
 
@@ -248,7 +310,116 @@ void SoftMP3::onQueueFilled(OMX_U32 portIndex) {
         if ((decoderErr = pvmp3_framedecoder(mConfig, mDecoderBuf))
                 != NO_DECODING_ERROR) {
             ALOGV("mp3 decoder returned error %d", decoderErr);
+#if SUPPORT_NO_ENOUGH_MAIN_DATA
+			if(mIsFirst)
+				mDropFrameCount = 4;
+			if(mConfig->inputBufferUsedLength > mConfig->inputBufferCurrentLength)
+				mConfig->inputBufferUsedLength = mConfig->inputBufferCurrentLength;
 
+	        if (decoderErr != NO_ENOUGH_MAIN_DATA_ERROR) {
+				mFrameCount++;
+				ALOGE("--->error------>decoderErrr %d mFrameCount%d inputlen %d usedlen %d",decoderErr,mFrameCount,mConfig->inputBufferCurrentLength,mConfig->inputBufferUsedLength);
+
+				if(mFrameCount < 10)
+				{
+					mConfig->outputFrameSize  = 0;
+					
+					if(mBufExt.buf)
+					{
+						mBufExt.len -= mConfig->inputBufferUsedLength;
+						memcpy(mBufExt.buf,mBufExt.buf+ mConfig->inputBufferUsedLength,mBufExt.len);
+					}
+					else
+					{
+						if(inHeader)
+						{
+							inHeader->nOffset += mConfig->inputBufferUsedLength;
+							inHeader->nFilledLen -= mConfig->inputBufferUsedLength;
+							
+							if(inHeader->nFilledLen == 0)
+							{
+                                if(mAnchorTimeUs != inHeader->nTimeStamp){
+                                    mAnchorTimeUs = inHeader->nTimeStamp;
+                           		    mNumFramesOutput = 0;
+                                }
+								inInfo->mOwnedByUs = false;
+					            inQueue.erase(inQueue.begin());
+					            inInfo = NULL;
+					            notifyEmptyBufferDone(inHeader);
+					            inHeader = NULL;
+							}
+						}
+					}
+
+				}
+				else
+				{
+					if(inHeader)
+					{
+                        if(mAnchorTimeUs != inHeader->nTimeStamp){
+                            mAnchorTimeUs = inHeader->nTimeStamp;
+                   		    mNumFramesOutput = 0;
+                        }
+						inInfo->mOwnedByUs = false;
+			            inQueue.erase(inQueue.begin());
+			            inInfo = NULL;
+			            notifyEmptyBufferDone(inHeader);
+			            inHeader = NULL;
+					}
+					
+					if(mBufExt.buf)
+					{
+						mBufExt.len = 0;
+					}
+					mConfig->outputFrameSize  = 0;
+					mFrameCount = 0;
+				}
+
+				continue;
+	        }
+			
+			mConfig->inputBufferUsedLength = 0;
+			if(mBufExt.buf == NULL)
+			{
+				mBufExt.buf = (uint8*)malloc(TMP_BUF_SIZE);
+				mBufExt.len = 0;
+			}
+
+			if(mBufExt.len == TMP_BUF_SIZE)
+			{
+				ALOGE("1024 bytes has err = NO_ENOUGH_MAIN_DATA_ERROR ");
+                notify(OMX_EventError, OMX_ErrorUndefined, decoderErr, NULL);
+                mSignalledError = true;
+                return;
+			}
+			else
+			{
+				if(mBufExt.len == 0 && inHeader)
+				{
+					uint8 * src =  (uint8_t *)inHeader->pBuffer + inHeader->nOffset;
+					mBufExt.len = inHeader->nFilledLen;
+					ALOGE("first used len %d used len %d cur len %d mConfig->samplingRate %d src %2x%2x%2x%2x",
+						mBufExt.len,mConfig->inputBufferUsedLength,mConfig->inputBufferCurrentLength,mConfig->samplingRate,src[0],src[1],src[2],src[3]);
+					memcpy(mBufExt.buf,src,mBufExt.len);
+					inInfo->mOwnedByUs = false;
+		            inQueue.erase(inQueue.begin());
+		            inInfo = NULL;
+		            notifyEmptyBufferDone(inHeader);
+		            inHeader = NULL;
+				}
+				else if(mBufExt.len > 0 && inHeader)
+				{
+					// I think 4K is enough for mp3 decoder,so if happen not enough just release inputbuffer ,need new input
+					ALOGV("-->not enough left len %d inputbuf len %d",mBufExt.len,inHeader->nFilledLen);
+					inInfo->mOwnedByUs = false;
+		            inQueue.erase(inQueue.begin());
+		            inInfo = NULL;
+		            notifyEmptyBufferDone(inHeader);
+		            inHeader = NULL;
+				}
+			}
+			continue;
+#else
             if (decoderErr != NO_ENOUGH_MAIN_DATA_ERROR
                         && decoderErr != SIDE_INFO_ERROR) {
                 ALOGE("mp3 decoder returned error %d", decoderErr);
@@ -269,8 +440,17 @@ void SoftMP3::onQueueFilled(OMX_U32 portIndex) {
                    mConfig->outputFrameSize * sizeof(int16_t));
 
             mConfig->inputBufferUsedLength = inHeader->nFilledLen;
-        } else if (mConfig->samplingRate != mSamplingRate
+
+#endif      
+        }
+#if SUPPORT_NO_ENOUGH_MAIN_DATA
+		else if (!mIsFormatChange && (mConfig->samplingRate != mSamplingRate
+                || mConfig->num_channels != mNumChannels)) {
+            mIsFormatChange = true;
+#else
+		else if (mConfig->samplingRate != mSamplingRate
                 || mConfig->num_channels != mNumChannels) {
+#endif
             mSamplingRate = mConfig->samplingRate;
             mNumChannels = mConfig->num_channels;
 
@@ -281,31 +461,99 @@ void SoftMP3::onQueueFilled(OMX_U32 portIndex) {
 
         if (mIsFirst) {
             mIsFirst = false;
+#if SUPPORT_NO_ENOUGH_MAIN_DATA
+			if(!mIsFormatChange)
+				mIsFormatChange = true;
+#endif
             // The decoder delay is 529 samples, so trim that many samples off
             // the start of the first output buffer. This essentially makes this
             // decoder have zero delay, which the rest of the pipeline assumes.
             outHeader->nOffset =
                 kPVMP3DecoderDelay * mNumChannels * sizeof(int16_t);
 
-            outHeader->nFilledLen =
-                mConfig->outputFrameSize * sizeof(int16_t) - outHeader->nOffset;
+            if (mConfig->outputFrameSize * sizeof(int16_t) >=outHeader->nOffset) {
+                outHeader->nFilledLen =
+                    mConfig->outputFrameSize * sizeof(int16_t) - outHeader->nOffset;
+            } else {
+                outHeader->nFilledLen = 0;
+            }
         } else {
             outHeader->nOffset = 0;
             outHeader->nFilledLen = mConfig->outputFrameSize * sizeof(int16_t);
         }
-
+		if(mConfig && mConfig->samplingRate)
         outHeader->nTimeStamp =
             mAnchorTimeUs
                 + (mNumFramesOutput * 1000000ll) / mConfig->samplingRate;
+		else
+			 outHeader->nTimeStamp = mAnchorTimeUs;
 
         outHeader->nFlags = 0;
-
+#if SUPPORT_NO_ENOUGH_MAIN_DATA
+		if(mDropFrameCount > 0)
+		{
+			mDropFrameCount--;
+			memset(outHeader->pBuffer + outHeader->nOffset,0,outHeader->nFilledLen);
+		}
+		if(mBufExt.len)
+		{
+			mBufExt.len -= mConfig->inputBufferUsedLength;
+			if(mBufExt.len > 0)
+			memcpy(mBufExt.buf,mBufExt.buf+ mConfig->inputBufferUsedLength,mBufExt.len);
+			
+			if(inHeader)
+			{
+				uint32_t copyLen = 0;
+				if((TMP_BUF_SIZE -mBufExt.len) >=  inHeader->nFilledLen)
+				{
+					copyLen = inHeader->nFilledLen;
+				}
+				else
+				{
+					copyLen = TMP_BUF_SIZE -mBufExt.len;
+				}
+	
+				// no copy data  and no left data, so we need new input
+				if(mBufExt.len == 0 && copyLen == 0)
+				{
+					inInfo->mOwnedByUs = false;
+		            inQueue.erase(inQueue.begin());
+		            inInfo = NULL;
+		            notifyEmptyBufferDone(inHeader);
+		            inHeader = NULL;
+		          
+				}
+				else if (copyLen > 0)
+				{
+					uint8 * src =  (uint8_t *)inHeader->pBuffer + inHeader->nOffset;
+					memcpy(mBufExt.buf + mBufExt.len,src,copyLen);
+					mBufExt.len += copyLen;
+					inHeader->nOffset += copyLen;
+					inHeader->nFilledLen -= copyLen;
+				}
+	
+			}
+		}
+		else
+		{
+			if(inHeader && mBufExt.buf == NULL)
+			{
+				inHeader->nOffset += mConfig->inputBufferUsedLength;
+		        inHeader->nFilledLen -= mConfig->inputBufferUsedLength;
+		        if (inHeader->nFilledLen == 0) {
+		            inInfo->mOwnedByUs = false;
+		            inQueue.erase(inQueue.begin());
+		            inInfo = NULL;
+		            notifyEmptyBufferDone(inHeader);
+		            inHeader = NULL;
+		        }
+			}
+		}
+#else
         CHECK_GE(inHeader->nFilledLen, mConfig->inputBufferUsedLength);
 
         inHeader->nOffset += mConfig->inputBufferUsedLength;
         inHeader->nFilledLen -= mConfig->inputBufferUsedLength;
-
-        mNumFramesOutput += mConfig->outputFrameSize / mNumChannels;
 
         if (inHeader->nFilledLen == 0) {
             inInfo->mOwnedByUs = false;
@@ -314,6 +562,10 @@ void SoftMP3::onQueueFilled(OMX_U32 portIndex) {
             notifyEmptyBufferDone(inHeader);
             inHeader = NULL;
         }
+#endif
+
+		if(mNumChannels)
+			mNumFramesOutput += mConfig->outputFrameSize / mNumChannels;
 
         outInfo->mOwnedByUs = false;
         outQueue.erase(outQueue.begin());
@@ -329,6 +581,14 @@ void SoftMP3::onPortFlushCompleted(OMX_U32 portIndex) {
         // depend on fragments from the last one decoded.
         pvmp3_InitDecoder(mConfig, mDecoderBuf);
         mIsFirst = true;
+
+#if SUPPORT_NO_ENOUGH_MAIN_DATA
+//when the audio do seek ,the len must be reset;
+		if(mBufExt.buf)
+		{
+			mBufExt.len = 0;
+		}
+#endif
     }
 }
 

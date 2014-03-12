@@ -31,6 +31,7 @@ class Parcel;
 class TimedTextPlayer;
 class TimedTextSource;
 class DataSource;
+class FrameQueueManage;
 
 class TimedTextDriver {
 public:
@@ -59,6 +60,9 @@ public:
     void getExternalTrackInfo(Parcel *parcel);
     size_t countExternalTracks() const;
 
+    int32_t getCurFrameDuration();
+    void setTimedTextObserver(FrameQueueManage* observer);
+    void notifyObserver(int msg, void* obj);
 private:
     Mutex mLock;
 
@@ -78,6 +82,7 @@ private:
     sp<TimedTextPlayer> mPlayer;
     wp<MediaPlayerBase> mListener;
 
+    FrameQueueManage* mObserver;
     // Variables to be guarded by mLock.
     State mState;
     size_t mCurrentTrackIndex;

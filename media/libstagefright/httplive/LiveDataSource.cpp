@@ -111,6 +111,13 @@ ssize_t LiveDataSource::readAt_l(off64_t offset, void *data, size_t size) {
 
         sp<ABuffer> buffer = *mBufferQueue.begin();
 
+        if(sizeDone > 0){
+            if(buffer->data()[0] == 0x47){
+                ALOGE("The buffer size is small get size,skip the data");
+                sizeDone = 0;
+            }
+            ALOGE("continue the buffer in no start at 0x47");
+        }
         size_t copy = size - sizeDone;
 
         if (copy > buffer->size()) {

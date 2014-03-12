@@ -1983,8 +1983,8 @@ The parameters that affect these derived values are:
 void AudioFlinger::PlaybackThread::cacheParameters_l()
 {
     mixBufferSize = mNormalFrameCount * mFrameSize;
-    activeSleepTime = activeSleepTimeUs();
-    idleSleepTime = idleSleepTimeUs();
+    activeSleepTime = activeSleepTimeUs()/4;
+    idleSleepTime = idleSleepTimeUs()/4;
 }
 
 void AudioFlinger::PlaybackThread::invalidateTracks(audio_stream_type_t streamType)
@@ -3074,14 +3074,14 @@ AudioFlinger::PlaybackThread::mixer_state AudioFlinger::MixerThread::prepareTrac
                 track->mFillingUpStatus = Track::FS_ACTIVE;
                 if (track->mState == TrackBase::RESUMING) {
                     track->mState = TrackBase::ACTIVE;
-                    param = AudioMixer::RAMP_VOLUME;
+                    //param = AudioMixer::RAMP_VOLUME;
                 }
                 mAudioMixer->setParameter(name, AudioMixer::RESAMPLE, AudioMixer::RESET, NULL);
             // FIXME should not make a decision based on mServer
             } else if (cblk->mServer != 0) {
                 // If the track is stopped before the first frame was mixed,
                 // do not apply ramp
-                param = AudioMixer::RAMP_VOLUME;
+                //param = AudioMixer::RAMP_VOLUME;
             }
 
             // compute volume for this track
@@ -3936,8 +3936,7 @@ AudioFlinger::OffloadThread::OffloadThread(const sp<AudioFlinger>& audioFlinger,
     :   DirectOutputThread(audioFlinger, output, id, device, OFFLOAD),
         mHwPaused(false),
         mFlushPending(false),
-        mPausedBytesRemaining(0),
-        mPreviousTrack(NULL)
+        mPausedBytesRemaining(0)
 {
     //FIXME: mStandby should be set to true by ThreadBase constructor
     mStandby = true;
@@ -3984,23 +3983,6 @@ AudioFlinger::PlaybackThread::mixer_state AudioFlinger::OffloadThread::prepareTr
         sp<Track> l = mLatestActiveTrack.promote();
         bool last = l.get() == track;
 
-        if (mPreviousTrack != NULL) {
-            if (track != mPreviousTrack) {
-                // Flush any data still being written from last track
-                mBytesRemaining = 0;
-                if (mPausedBytesRemaining) {
-                    // Last track was paused so we also need to flush saved
-                    // mixbuffer state and invalidate track so that it will
-                    // re-submit that unwritten data when it is next resumed
-                    mPausedBytesRemaining = 0;
-                    // Invalidate is a bit drastic - would be more efficient
-                    // to have a flag to tell client that some of the
-                    // previously written data was lost
-                    mPreviousTrack->invalidate();
-                }
-            }
-        }
-        mPreviousTrack = track;
         if (track->isPausing()) {
             track->setPaused();
             if (last) {
@@ -4048,6 +4030,31 @@ AudioFlinger::PlaybackThread::mixer_state AudioFlinger::OffloadThread::prepareTr
             }
 
             if (last) {
+                sp<Track> previousTrack = mPreviousTrack.promote();
+                if (previousTrack != 0) {
+                    if (track != previousTrack.get()) {
+                        // Flush any data still being written from last track
+                        mBytesRemaining = 0;
+                        if (mPausedBytesRemaining) {
+                            // Last track was paused so we also need to flush saved
+                            // mixbuffer state and invalidate track so that it will
+                            // re-submit that unwritten data when it is next resumed
+                            mPausedBytesRemaining = 0;
+                            // Invalidate is a bit drastic - would be more efficient
+                            // to have a flag to tell client that some of the
+                            // previously written data was lost
+                            previousTrack->invalidate();
+                        }
+                        // flush data already sent to the DSP if changing audio session as audio
+                        // comes from a different source. Also invalidate previous track to force a
+                        // seek when resuming.
+                        if (previousTrack->sessionId() != track->sessionId()) {
+                            previousTrack->invalidate();
+                            mFlushPending = true;
+                        }
+                    }
+                }
+                mPreviousTrack = track;
                 // reset retry count
                 track->mRetryCount = kMaxTrackRetriesOffload;
                 mActiveTrack = t;
@@ -4066,14 +4073,18 @@ AudioFlinger::PlaybackThread::mixer_state AudioFlinger::OffloadThread::prepareTr
                     track->mState = TrackBase::STOPPING_2; // so presentation completes after drain
                     // do not drain if no data was ever sent to HAL (mStandby == true)
                     if (last && !mStandby) {
-                        sleepTime = 0;
-                        standbyTime = systemTime() + standbyDelay;
-                        mixerStatus = MIXER_DRAIN_TRACK;
-                        mDrainSequence += 2;
+                        // do not modify drain sequence if we are already draining. This happens
+                        // when resuming from pause after drain.
+                        if ((mDrainSequence & 1) == 0) {
+                            sleepTime = 0;
+                            standbyTime = systemTime() + standbyDelay;
+                            mixerStatus = MIXER_DRAIN_TRACK;
+                            mDrainSequence += 2;
+                        }
                         if (mHwPaused) {
                             // It is possible to move from PAUSED to STOPPING_1 without
                             // a resume so we must ensure hardware is running
-                            mOutput->stream->resume(mOutput->stream);
+                            doHwResume = true;
                             mHwPaused = false;
                         }
                     }
@@ -4419,7 +4430,9 @@ bool AudioFlinger::RecordThread::threadLoop()
 
     // used to verify we've read at least once before evaluating how many bytes were read
     bool readOnce = false;
-
+	
+	short tmpBuf[512];
+	
     // start recording
     while (!exitPending()) {
 
@@ -4610,7 +4623,8 @@ bool AudioFlinger::RecordThread::threadLoop()
                 // Release the processor for a while before asking for a new buffer.
                 // This will give the application more chance to read from the buffer and
                 // clear the overflow.
-                usleep(kRecordThreadSleepUs);
+                mInput->stream->read(mInput->stream, tmpBuf, 1024); 
+                //usleep(kRecordThreadSleepUs);
             }
         }
         // enable changes in effect chain

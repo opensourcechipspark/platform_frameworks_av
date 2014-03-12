@@ -246,7 +246,7 @@ private:
 
     status_t setAACFormat(
             int32_t numChannels, int32_t sampleRate, int32_t bitRate,
-            int32_t aacProfile, bool isADTS);
+            int32_t aacProfile, bool isADTS,bool isLATM = false);
 
     void setG711Format(int32_t numChannels);
 

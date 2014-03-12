@@ -933,7 +933,7 @@ void MPEG4Writer::writeMvhdBox(int64_t durationUs) {
     writeInt32(now);           // creation time
     writeInt32(now);           // modification time
     writeInt32(mTimeScale);    // mvhd timescale
-    int32_t duration = (durationUs * mTimeScale + 5E5) / 1E6;
+    uint32_t duration = (durationUs * mTimeScale + 5E5) / 1E6;
     writeInt32(duration);
     writeInt32(0x10000);       // rate: 1.0
     writeInt16(0x100);         // volume
@@ -1769,6 +1769,8 @@ status_t MPEG4Writer::Track::stop() {
     if (mDone) {
         return OK;
     }
+	if(mIsAudio && (mStszTableEntries->count() == 0))
+		usleep(500000);
     mDone = true;
 
     void *dummy;
@@ -2878,7 +2880,7 @@ void MPEG4Writer::Track::writeMdhdBox(uint32_t now) {
     mOwner->writeInt32(now);           // creation time
     mOwner->writeInt32(now);           // modification time
     mOwner->writeInt32(mTimeScale);    // media timescale
-    int32_t mdhdDuration = (trakDurationUs * mTimeScale + 5E5) / 1E6;
+    uint32_t mdhdDuration = (trakDurationUs * mTimeScale + 5E5) / 1E6;
     mOwner->writeInt32(mdhdDuration);  // use media timescale
     // Language follows the three letter standard ISO-639-2/T
     // 'e', 'n', 'g' for "English", for instance.

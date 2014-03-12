@@ -21,7 +21,6 @@
 #include "PlaylistFetcher.h"
 
 #include "LiveDataSource.h"
-#include "LiveSession.h"
 #include "M3UParser.h"
 
 #include "include/avc_utils.h"

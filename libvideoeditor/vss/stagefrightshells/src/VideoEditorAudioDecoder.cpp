@@ -671,8 +671,9 @@ M4OSA_ERR VideoEditorAudioDecoder_processOutputBuffer(M4AD_Context pContext,
 
     pDecoderContext->mNbOutputFrames++;
 
-    if( pDecoderContext->mAudioStreamHandler->m_nbChannels ==
-        (M4OSA_UInt32)pDecoderContext->mNbOutputChannels ) {
+    if( (pDecoderContext->mAudioStreamHandler->m_nbChannels ==
+        (M4OSA_UInt32)pDecoderContext->mNbOutputChannels) &&
+        pDecoderContext->mAudioStreamHandler->m_nbChannels) {
         // Just copy the PCMs
         pOuputBuffer->m_bufferSize = (M4OSA_UInt32)buffer->range_length();
         memcpy((void *)pOuputBuffer->m_dataAddress,

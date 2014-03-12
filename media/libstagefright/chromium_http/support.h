@@ -102,6 +102,7 @@ struct SfDelegate : public net::URLRequest::Delegate {
 
     void setOwner(ChromiumHTTPDataSource *mOwner);
 
+	std::string getRealUrl();
     // Gets the UID of the calling process
     bool getUID(uid_t *uid) const;
 

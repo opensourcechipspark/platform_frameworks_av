@@ -20,7 +20,7 @@
 *************************************************************************
 */
 #define LOG_NDEBUG 1
-#define LOG_TAG "VIDEOEDITOR_VIDEODECODER"
+#define LOG_TAG "VideoEditorVideoDecoder"
 /*******************
  *     HEADERS     *
  *******************/
@@ -32,6 +32,7 @@
 #include <media/stagefright/foundation/ADebug.h>
 #include <media/stagefright/MetaData.h>
 #include <media/stagefright/MediaDefs.h>
+#include "vpu_global.h"
 /********************
  *   DEFINITIONS    *
  ********************/
@@ -807,6 +808,8 @@ M4OSA_ERR VideoEditorVideoDecoder_configureFromMetadata(M4OSA_Context pContext,
     success = meta->findInt32(kKeyHeight, &vHeight);
     VIDEOEDITOR_CHECK(TRUE == success, M4ERR_PARAMETER);
 
+    vWidth = (vWidth + 0x0F) & (~0x0F);
+    vHeight = (vHeight + 0x0F) & (~0x0F);
     ALOGV("vWidth = %d, vHeight = %d", vWidth, vHeight);
 
     pDecShellContext->mGivenWidth = vWidth;
@@ -1033,7 +1036,7 @@ M4OSA_ERR VideoEditorVideoDecoder_create(M4OSA_Context *pContext,
     // Create the decoder
     pDecShellContext->mVideoDecoder = OMXCodec::Create(
         pDecShellContext->mClient.interface(),
-        decoderMetadata, false, pDecShellContext->mReaderSource);
+        decoderMetadata, false, pDecShellContext->mReaderSource,NULL,OMXCodec::kSoftwareCodecsOnly);
     VIDEOEDITOR_CHECK(NULL != pDecShellContext->mVideoDecoder.get(),
         M4ERR_SF_DECODER_RSRC_FAIL);
 
@@ -1423,6 +1426,11 @@ M4OSA_ERR VideoEditorVideoDecoder_decode(M4OSA_Context context,
 
         // Now we have a good next buffer, release the previous one.
         if (pDecoderBuffer != NULL) {
+            VPU_FRAME *frame = (VPU_FRAME *)(pDecoderBuffer->data());
+            if (frame && frame->vpumem.phy_addr) {
+                VPUMemLink(&frame->vpumem);
+                VPUFreeLinear(&frame->vpumem);
+            }
             pDecoderBuffer->release();
             pDecoderBuffer = NULL;
         }
@@ -1508,27 +1516,63 @@ static M4OSA_ERR copyBufferToQueue(
             ALOGE("convertDecoderOutputToI420 failed");
             lerr = M4ERR_NOT_IMPLEMENTED;
         }
-    } else if (pDecShellContext->decOuputColorFormat == OMX_COLOR_FormatYUV420Planar) {
+    } else if ((pDecShellContext->decOuputColorFormat == OMX_COLOR_FormatYUV420Planar) ||
+                (pDecShellContext->decOuputColorFormat == OMX_COLOR_FormatYUV420SemiPlanar)) {
         int32_t width = pDecShellContext->m_pVideoStreamhandler->m_videoWidth;
         int32_t height = pDecShellContext->m_pVideoStreamhandler->m_videoHeight;
-        int32_t yPlaneSize = width * height;
-        int32_t uvPlaneSize = width * height / 4;
+        int32_t yPlaneSize = 0;
+        int32_t uvPlaneSize = 0;
         int32_t offsetSrc = 0;
+
+        if (pDecShellContext->decOuputColorFormat == OMX_COLOR_FormatYUV420SemiPlanar) {
+            width = (width + 0x0F) & (~0x0F);
+            height = (height + 0x0F) & (~0x0F);
+        }
+
+        yPlaneSize = width * height;
+        uvPlaneSize = (yPlaneSize >>2);
+        offsetSrc = 0;
 
         if (( width == pDecShellContext->mGivenWidth )  &&
             ( height == pDecShellContext->mGivenHeight ))
         {
-            M4OSA_MemAddr8 pTmpBuff = (M4OSA_MemAddr8)pDecoderBuffer->data() + pDecoderBuffer->range_offset();
+            if (pDecShellContext->decOuputColorFormat == OMX_COLOR_FormatYUV420Planar) {
+                M4OSA_MemAddr8 pTmpBuff = (M4OSA_MemAddr8)pDecoderBuffer->data() + pDecoderBuffer->range_offset();
 
-            memcpy((void *)tmpDecBuffer->pData, (void *)pTmpBuff, yPlaneSize);
+                memcpy((void *)tmpDecBuffer->pData, (void *)pTmpBuff, yPlaneSize);
 
-            offsetSrc += pDecShellContext->mGivenWidth * pDecShellContext->mGivenHeight;
-            memcpy((void *)((M4OSA_MemAddr8)tmpDecBuffer->pData + yPlaneSize),
-                (void *)(pTmpBuff + offsetSrc), uvPlaneSize);
+                offsetSrc += pDecShellContext->mGivenWidth * pDecShellContext->mGivenHeight;
+                memcpy((void *)((M4OSA_MemAddr8)tmpDecBuffer->pData + yPlaneSize),
+                    (void *)(pTmpBuff + offsetSrc), uvPlaneSize);
 
-            offsetSrc += (pDecShellContext->mGivenWidth >> 1) * (pDecShellContext->mGivenHeight >> 1);
-            memcpy((void *)((M4OSA_MemAddr8)tmpDecBuffer->pData + yPlaneSize + uvPlaneSize),
-                (void *)(pTmpBuff + offsetSrc), uvPlaneSize);
+                offsetSrc += (pDecShellContext->mGivenWidth >> 1) * (pDecShellContext->mGivenHeight >> 1);
+                memcpy((void *)((M4OSA_MemAddr8)tmpDecBuffer->pData + yPlaneSize + uvPlaneSize),
+                    (void *)(pTmpBuff + offsetSrc), uvPlaneSize);
+            } else {
+                VPU_FRAME *frame = (VPU_FRAME *)(pDecoderBuffer->data());
+                if(!frame->vpumem.phy_addr){
+                    return OK;
+                }
+                VPUMemLink(&frame->vpumem);
+                VPUMemInvalidate(&frame->vpumem);
+
+                M4OSA_MemAddr8 pTmpBuff = (M4OSA_MemAddr8)(frame->vpumem.vir_addr);
+
+                /* Y */
+                memcpy((void *)tmpDecBuffer->pData, (void *)pTmpBuff, yPlaneSize);
+
+                int i =0;
+                M4OSA_MemAddr8 pUVSrcBuff = pTmpBuff + yPlaneSize;
+                M4OSA_MemAddr8 pUFrmDstBuf = (M4OSA_MemAddr8)tmpDecBuffer->pData + yPlaneSize;
+                M4OSA_MemAddr8 pVFrmDstBuf = (M4OSA_MemAddr8)tmpDecBuffer->pData + yPlaneSize + uvPlaneSize;
+                /* UV */
+                for (; i <uvPlaneSize; i++) {
+                    *pUFrmDstBuf++ = *pUVSrcBuff++;
+                    *pVFrmDstBuf++ = *pUVSrcBuff++;
+                }
+
+                VPUFreeLinear(&frame->vpumem);
+            }
         }
         else
         {

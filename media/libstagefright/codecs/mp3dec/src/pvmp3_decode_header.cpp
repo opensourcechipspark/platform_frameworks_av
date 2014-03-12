@@ -121,9 +121,7 @@ ERROR_CODE pvmp3_decode_header(tmp3Bits  *inputStream,
     uint32  temp;
 
     /*
-     * Verify that at least the header is complete
-     * Note that SYNC_WORD_LNGTH is in unit of bits, but inputBufferCurrentLength
-     * is in unit of bytes.
+     *  Verify that at least the header is complete
      */
     if (inputStream->inputBufferCurrentLength < ((SYNC_WORD_LNGTH + 21) >> 3))
     {

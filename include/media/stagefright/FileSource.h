@@ -41,6 +41,7 @@ public:
     virtual sp<DecryptHandle> DrmInitialization(const char *mime);
 
     virtual void getDrmInfo(sp<DecryptHandle> &handle, DrmManagerClient **client);
+    virtual void setDrmPreviewMode() {mIsDrmPreview = true;};
 
 protected:
     virtual ~FileSource();
@@ -58,6 +59,9 @@ private:
     int64_t mDrmBufSize;
     unsigned char *mDrmBuf;
 
+    bool mIsDrmPreview;
+    const char * mFileName;
+    char mPathBuffer[1024];
     ssize_t readAtDRM(off64_t offset, void *data, size_t size);
 
     FileSource(const FileSource &);

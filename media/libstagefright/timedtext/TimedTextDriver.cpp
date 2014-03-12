@@ -36,6 +36,7 @@
 #include "TextDescriptions.h"
 #include "TimedTextPlayer.h"
 #include "TimedTextSource.h"
+#include "FrameQueueManage.h"
 
 namespace android {
 
@@ -43,12 +44,14 @@ TimedTextDriver::TimedTextDriver(
         const wp<MediaPlayerBase> &listener)
     : mLooper(new ALooper),
       mListener(listener),
+      mObserver(NULL),
       mState(UNINITIALIZED),
       mCurrentTrackIndex(UINT_MAX) {
     mLooper->setName("TimedTextDriver");
     mLooper->start();
     mPlayer = new TimedTextPlayer(listener);
     mLooper->registerHandler(mPlayer);
+    mPlayer->setTimedTextDriver(this);
 }
 
 TimedTextDriver::~TimedTextDriver() {
@@ -191,6 +194,20 @@ status_t TimedTextDriver::addInBandTextSource(
     if (source == NULL) {
         return ERROR_UNSUPPORTED;
     }
+
+    const char *mime;
+    uint32_t vobSubFlag = 0;
+    if (mediaSource->getFormat()->findCString(kKeyMIMEType, &mime)) {
+
+        if (strcasecmp(mime, MEDIA_MIMETYPE_TEXT_MATROSKA_VOBSUB) == 0) {
+            vobSubFlag = 1;
+        }
+
+        if (mObserver) {
+            mObserver->subtitleNotify(SUBTITLE_MSG_VOBSUB_FLAG, &vobSubFlag);
+        }
+    }
+
     Mutex::Autolock autoLock(mLock);
     mTextSourceVector.add(trackIndex, source);
     mTextSourceTypeVector.add(TEXT_SOURCE_TYPE_IN_BAND);
@@ -217,6 +234,15 @@ status_t TimedTextDriver::addOutOfBandTextSource(
     if (fd < 0) {
         ALOGE("Invalid file descriptor: %d", fd);
         return ERROR_UNSUPPORTED;
+    }
+
+    /*
+     ** if file length is 0x7ffffffffffffffL, this means it set by
+     ** addTimedTextSource in MediaPlay.java, in this case, we need
+     ** to get real file length by fseek.
+    */
+    if (length == 0x7ffffffffffffffL) {
+        length = lseek64(fd, 0, SEEK_END);
     }
 
     sp<DataSource> dataSource = new FileSource(dup(fd), offset, length);
@@ -281,4 +307,31 @@ void TimedTextDriver::getExternalTrackInfo(Parcel *parcel) {
     }
 }
 
+int32_t TimedTextDriver::getCurFrameDuration()
+{
+    if (mPlayer !=NULL) {
+        return mPlayer->getCurFrameDuration();
+    } else {
+        return 0;
+    }
+}
+
+void TimedTextDriver::setTimedTextObserver(FrameQueueManage* observer)
+{
+    mObserver = observer;
+}
+
+void TimedTextDriver::notifyObserver(int msg, void* obj) {
+    if (mObserver) {
+        switch (msg) {
+            case SUBTITLE_MSG_VOBSUB_FLAG:
+            case SUBTITLE_MSG_VOBSUB_GET:
+                mObserver->subtitleNotify(msg, obj);
+                break;
+
+            default:
+                break;
+        }
+    }
+}
 }  // namespace android

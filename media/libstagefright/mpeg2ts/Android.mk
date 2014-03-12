@@ -2,16 +2,18 @@ LOCAL_PATH:= $(call my-dir)
 
 include $(CLEAR_VARS)
 
-LOCAL_SRC_FILES:=                 \
-        AnotherPacketSource.cpp   \
-        ATSParser.cpp             \
-        ESQueue.cpp               \
-        MPEG2PSExtractor.cpp      \
-        MPEG2TSExtractor.cpp      \
+LOCAL_SRC_FILES:= \
+	        AnotherPacketSource.cpp\
+			ATSParser.cpp             \
+			ESQueue.cpp               \
+			MPEG2TSExtractor.cpp \
+			bitstream.cpp
 
 LOCAL_C_INCLUDES:= \
-	$(TOP)/frameworks/av/media/libstagefright \
-	$(TOP)/frameworks/native/include/media/openmax
+		$(JNI_H_INCLUDE) \
+		$(TOP)/frameworks/native/include/media/openmax \
+		$(TOP)/frameworks/av/media/libstagefright \
+		$(TOP)/frameworks/av/media/libstagefright/ffmpg/include
 
 LOCAL_MODULE:= libstagefright_mpeg2ts
 

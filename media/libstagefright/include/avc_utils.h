@@ -51,7 +51,7 @@ status_t getNextNALUnit(
 
 struct MetaData;
 sp<MetaData> MakeAVCCodecSpecificData(const sp<ABuffer> &accessUnit);
-
+int MakeAVCCodecSpecificData_Wimo(const sp<ABuffer> &accessUnit,const sp<MetaData> &mFormat) ;
 bool IsIDR(const sp<ABuffer> &accessUnit);
 bool IsAVCReferenceFrame(const sp<ABuffer> &accessUnit);
 

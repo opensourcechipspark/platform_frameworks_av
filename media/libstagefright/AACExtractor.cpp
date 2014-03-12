@@ -70,7 +70,42 @@ private:
 };
 
 ////////////////////////////////////////////////////////////////////////////////
+//Returns the startpos jump the ID3 info of data
+size_t get_id3_len(const sp<DataSource> &source)
+{
 
+	size_t startPos = 0;
+	for (;;)
+		{
+			uint8_t id3header[10];
+			if (source->readAt(startPos, id3header, sizeof(id3header))
+					< (ssize_t)sizeof(id3header)) {
+				// If we can't even read these 10 bytes, we might as well bail
+				// out, even if there _were_ 10 bytes of valid mp3 audio data...
+				return startPos;
+			}
+	
+			if (memcmp("ID3", id3header, 3)) {
+				break;
+			}
+	
+			// Skip the ID3v2 header.
+	
+			size_t len =
+				((id3header[6] & 0x7f) << 21)
+				| ((id3header[7] & 0x7f) << 14)
+				| ((id3header[8] & 0x7f) << 7)
+				| (id3header[9] & 0x7f);
+	
+			len += 10;
+	
+			startPos += len;
+	
+			ALOGV("skipped ID3 tag, new starting offset is %lld (0x%016llx)",
+				 startPos, startPos);
+		}
+	return startPos;
+}
 // Returns the sample rate based on the sampling frequency index
 uint32_t get_sample_rate(const uint8_t sf_index)
 {
@@ -92,7 +127,7 @@ uint32_t get_sample_rate(const uint8_t sf_index)
 // The returned value is the AAC frame size with the ADTS header length (regardless of
 //     the presence of the CRC).
 // If headerSize is non-NULL, it will be used to return the size of the header of this ADTS frame.
-static size_t getAdtsFrameLength(const sp<DataSource> &source, off64_t offset, size_t* headerSize) {
+static size_t getAdtsFrameLength(const sp<DataSource> &source, off64_t &offset, size_t* headerSize) {
 
     const size_t kAdtsHeaderLengthNoCrc = 7;
     const size_t kAdtsHeaderLengthWithCrc = 9;
@@ -100,11 +135,13 @@ static size_t getAdtsFrameLength(const sp<DataSource> &source, off64_t offset, s
     size_t frameSize = 0;
 
     uint8_t syncword[2];
+find_sync:
     if (source->readAt(offset, &syncword, 2) != 2) {
         return 0;
     }
     if ((syncword[0] != 0xff) || ((syncword[1] & 0xf6) != 0xf0)) {
-        return 0;
+		offset++;
+        goto find_sync;
     }
 
     uint8_t protectionAbsent;
@@ -123,7 +160,8 @@ static size_t getAdtsFrameLength(const sp<DataSource> &source, off64_t offset, s
     // protectionAbsent is 0 if there is CRC
     size_t headSize = protectionAbsent ? kAdtsHeaderLengthNoCrc : kAdtsHeaderLengthWithCrc;
     if (headSize > frameSize) {
-        return 0;
+       	offset++;
+        goto find_sync;
     }
     if (headerSize != NULL) {
         *headerSize = headSize;
@@ -174,6 +212,17 @@ AACExtractor::AACExtractor(
     if (mDataSource->getSize(&streamSize) == OK) {
          while (offset < streamSize) {
             if ((frameSize = getAdtsFrameLength(source, offset, NULL)) == 0) {
+				
+				char id3Header[6];
+				if(mDataSource->readAt(offset, id3Header, 6) < 6)
+				{
+					//if the left data len less than 6 ,we think it is normal
+					break;
+				}
+				//ID3V1 ''TAG"      APETAG
+				if((id3Header[0]== 'T'&&id3Header[1] == 'A'&&id3Header[2] =='G')||
+					(id3Header[3]== 'T'&&id3Header[4] == 'A'&&id3Header[5] =='G'))
+					break;
                 return;
             }
 

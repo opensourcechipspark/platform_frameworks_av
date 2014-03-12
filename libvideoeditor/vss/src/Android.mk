@@ -66,6 +66,7 @@ LOCAL_SHARED_LIBRARIES :=       \
     libvideoeditor_osal         \
     libvideoeditor_videofilters \
     libvideoeditorplayer        \
+    libvpu
 
 LOCAL_STATIC_LIBRARIES := \
     libstagefright_color_conversion \

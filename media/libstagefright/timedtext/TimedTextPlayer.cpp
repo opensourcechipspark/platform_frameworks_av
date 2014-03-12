@@ -43,7 +43,9 @@ TimedTextPlayer::TimedTextPlayer(const wp<MediaPlayerBase> &listener)
       mSource(NULL),
       mPendingSeekTimeUs(kInvalidTimeUs),
       mPaused(false),
-      mSendSubtitleGeneration(0) {
+      mSendSubtitleGeneration(0),
+      mCurSubFrmDurMs(0),
+      mDriver(NULL){
 }
 
 TimedTextPlayer::~TimedTextPlayer() {
@@ -204,6 +206,9 @@ void TimedTextPlayer::onMessageReceived(const sp<AMessage> &msg) {
                 notifyError(err);
                 break;
             }
+
+            mSource->setTimedTextSourceObserver(this);
+
             Parcel parcel;
             err = mSource->extractGlobalDescriptions(&parcel);
             if (err != OK) {
@@ -245,6 +250,13 @@ void TimedTextPlayer::doRead(MediaSource::ReadOptions* options) {
     } else if (err != OK) {
         notifyError(err);
         return;
+    }
+
+    if (endTimeUs >startTimeUs) {
+        mCurSubFrmDurMs = (endTimeUs - startTimeUs) / 1000;
+        mCurSubFrmDurMs = mCurSubFrmDurMs >0 ? mCurSubFrmDurMs : 0;
+    } else {
+        mCurSubFrmDurMs = 0;
     }
 
     postTextEvent(parcelEvent, startTimeUs);
@@ -309,6 +321,16 @@ void TimedTextPlayer::notifyListener(const Parcel *parcel) {
         listener->sendEvent(MEDIA_TIMED_TEXT, 0, 0, parcel);
     } else {  // send an empty timed text to clear the screen
         listener->sendEvent(MEDIA_TIMED_TEXT);
+    }
+}
+
+void TimedTextPlayer::setTimedTextDriver(void* driver) {
+    mDriver = (TimedTextDriver*)driver;
+}
+
+void TimedTextPlayer::notifyObserver(int msg, void* obj) {
+    if (mDriver) {
+        mDriver->notifyObserver(msg, obj);
     }
 }
 

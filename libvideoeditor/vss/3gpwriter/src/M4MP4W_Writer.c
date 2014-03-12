@@ -4244,7 +4244,7 @@ M4OSA_ERR M4MP4W_closeWrite( M4OSA_Context context )
                 fileWriterContext)); /*h264*/
             /* Put the DSI (SPS + PPS) int the 3gp format*/
             /* SPS length in BE */
-
+#if 0
             if ((0x01 != mMp4FileDataPtr->videoTrackPtr->DSI[0]) ||
                  (0x42 != mMp4FileDataPtr->videoTrackPtr->DSI[1]))
             {
@@ -4253,6 +4253,7 @@ M4OSA_ERR M4MP4W_closeWrite( M4OSA_Context context )
                     mMp4FileDataPtr->videoTrackPtr->DSI[1]);
                 return M4ERR_PARAMETER;
             }
+#endif
             // Do not strip the DSI
             CLEANUPonERR( M4MP4W_putBlock(mMp4FileDataPtr->videoTrackPtr->DSI,
                 mMp4FileDataPtr->videoTrackPtr->dsiSize,

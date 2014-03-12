@@ -18,8 +18,14 @@
 #define LOG_TAG "OMXCodec"
 #include <utils/Log.h>
 
+#include "include/AACDecoder_MIRRORING.h"
+#include "include/FLACDecoder.h"
 #include "include/AACEncoder.h"
 
+#include "include/RkOn2Decoder.h"
+#include "include/HEVCDecoder.h"
+#include "include/RkOn2Encoder.h"
+#include "include/RkAudioDecoder.h"
 #include "include/ESDS.h"
 
 #include <binder/IServiceManager.h>
@@ -38,6 +44,9 @@
 #include <media/stagefright/Utils.h>
 #include <media/stagefright/SkipCutBuffer.h>
 #include <utils/Vector.h>
+#include <cutils/properties.h>
+#include <sys/ioctl.h>
+#include <fcntl.h>
 
 #include <OMX_Audio.h>
 #include <OMX_Component.h>
@@ -57,6 +66,15 @@ const static int64_t kBufferFilledEventTimeOutNs = 3000000000LL;
 // component in question is buggy or not.
 const static uint32_t kMaxColorFormatSupported = 1000;
 
+struct CodecInfo {
+    const char *mime;
+    const char *codec;
+};
+
+#define FACTORY_CREATE(name) \
+static sp<MediaSource> Make##name(const sp<MediaSource> &source) { \
+    return new name(source); \
+}
 #define FACTORY_CREATE_ENCODER(name) \
 static sp<MediaSource> Make##name(const sp<MediaSource> &source, const sp<MetaData> &meta) { \
     return new name(source, meta); \
@@ -64,7 +82,12 @@ static sp<MediaSource> Make##name(const sp<MediaSource> &source, const sp<MetaDa
 
 #define FACTORY_REF(name) { #name, Make##name },
 
+FACTORY_CREATE(AACDecoder_MIRRORING)
+FACTORY_CREATE(RkOn2Decoder)
+FACTORY_CREATE(FLACDecoder)
+FACTORY_CREATE(HEVCDecoder)
 FACTORY_CREATE_ENCODER(AACEncoder)
+FACTORY_CREATE_ENCODER(RkOn2Encoder)
 
 static sp<MediaSource> InstantiateSoftwareEncoder(
         const char *name, const sp<MediaSource> &source,
@@ -76,6 +99,7 @@ static sp<MediaSource> InstantiateSoftwareEncoder(
 
     static const FactoryInfo kFactoryInfo[] = {
         FACTORY_REF(AACEncoder)
+        FACTORY_REF(RkOn2Encoder)
     };
     for (size_t i = 0;
          i < sizeof(kFactoryInfo) / sizeof(kFactoryInfo[0]); ++i) {
@@ -87,6 +111,72 @@ static sp<MediaSource> InstantiateSoftwareEncoder(
     return NULL;
 }
 
+static sp<MediaSource> InstantiateSoftwareCodec(
+        const char *name, const sp<MediaSource> &source) {
+    struct FactoryInfo {
+        const char *name;
+        sp<MediaSource> (*CreateFunc)(const sp<MediaSource> &);
+    };
+    static const FactoryInfo kFactoryInfo[] = {
+        FACTORY_REF(AACDecoder_MIRRORING)
+		   /*FACTORY_REF(DTSDecoder)
+		   FACTORY_REF(WMADecoder)
+		   FACTORY_REF(FLACDecoder)
+		   FACTORY_REF(WMAPRODecoder)
+		   FACTORY_REF(AC3Decoder)
+		   FACTORY_REF(RADecoder)
+		   FACTORY_REF(WAVDecoder)*/
+        FACTORY_REF(HEVCDecoder)
+        FACTORY_REF(RkOn2Decoder)
+    };
+
+	ALOGI("--->InstantiateSoftwareCodec create %s codec",name);
+	char *codecName = NULL;
+	if(codecName = strstr(name,"RkAudioDecoder")){
+		codecName += strlen("RkAudioDecoder") + 1;
+		const char * decoderType = codecName;
+		return CreateRkAudioDecoderFactory(source, decoderType);
+	}
+		
+   
+    for (size_t i = 0;
+         i < sizeof(kFactoryInfo) / sizeof(kFactoryInfo[0]); ++i) {
+        if (!strcmp(name, kFactoryInfo[i].name)) {
+            char value[PROPERTY_VALUE_MAX];
+            char substring[PROPERTY_VALUE_MAX];
+            if((property_get("media.decoder.cfg", value, NULL)) &&
+                (strcmp(name, "RkOn2Decoder")))
+            {
+                char *subname;
+                subname = strstr(name,"Decoder");
+                if(subname)
+                {
+                    int offset = subname - name;
+                    memcpy(substring,name,offset);
+                    substring[offset] = '\0';
+
+    				if(!strcmp(substring,"WMAPRO"))
+    				{
+    					return (*kFactoryInfo[i].CreateFunc)(source);
+    				}
+
+                    if (strstr(value,substring)){
+                		return (*kFactoryInfo[i].CreateFunc)(source);
+                    }
+                }
+                else
+                {
+                    ALOGE("InstantiateSoftwareCodec, Decoder return NULL");
+                }
+            }
+            else
+            {
+                return (*kFactoryInfo[i].CreateFunc)(source);
+            }
+        }
+    }
+    return NULL;
+}
 #undef FACTORY_CREATE_ENCODER
 #undef FACTORY_REF
 
@@ -280,12 +370,14 @@ sp<MediaSource> OMXCodec::Create(
         uint32_t flags,
         const sp<ANativeWindow> &nativeWindow) {
     int32_t requiresSecureBuffers;
-    if (source->getFormat()->findInt32(
+    if (source != NULL) {
+    	if (source->getFormat()->findInt32(
                 kKeyRequiresSecureBuffers,
                 &requiresSecureBuffers)
             && requiresSecureBuffers) {
-        flags |= kIgnoreCodecSpecificData;
-        flags |= kUseSecureInputBuffers;
+        	flags |= kIgnoreCodecSpecificData;
+        	flags |= kUseSecureInputBuffers;
+        }
     }
 
     const char *mime;
@@ -293,6 +385,9 @@ sp<MediaSource> OMXCodec::Create(
     CHECK(success);
 
     Vector<CodecNameAndQuirks> matchingCodecs;
+    if(createEncoder){
+        flags |= kSoftwareCodecsOnly;
+    }
     findMatchingCodecs(
             mime, createEncoder, matchComponentName, flags, &matchingCodecs);
 
@@ -319,15 +414,14 @@ sp<MediaSource> OMXCodec::Create(
             componentName = tmp.c_str();
         }
 
-        if (createEncoder) {
-            sp<MediaSource> softwareCodec =
-                InstantiateSoftwareEncoder(componentName, source, meta);
+        sp<MediaSource> softwareCodec = createEncoder?
+            InstantiateSoftwareEncoder(componentName, source, meta):
+            InstantiateSoftwareCodec(componentName, source);
 
             if (softwareCodec != NULL) {
                 ALOGV("Successfully allocated software codec '%s'", componentName);
 
                 return softwareCodec;
-            }
         }
 
         ALOGV("Attempting to allocate OMX node '%s'", componentName);
@@ -361,9 +455,6 @@ sp<MediaSource> OMXCodec::Create(
             err = codec->configureCodec(meta);
 
             if (err == OK) {
-                if (!strcmp("OMX.Nvidia.mpeg2v.decode", componentName)) {
-                    codec->mFlags |= kOnlySubmitOneInputBufferAtOneTime;
-                }
 
                 return codec;
             }
@@ -516,22 +607,15 @@ status_t OMXCodec::configureCodec(const sp<MetaData> &meta) {
         if (!meta->findInt32(kKeyIsADTS, &isADTS)) {
             isADTS = false;
         }
+		int32_t isLATM;
+		if(!meta->findInt32(kKeyIsLATM, &isLATM)){
+			isLATM = false;
+		}
 
-        status_t err = setAACFormat(numChannels, sampleRate, bitRate, aacProfile, isADTS);
+        status_t err = setAACFormat(numChannels, sampleRate, bitRate, aacProfile, isADTS,isLATM);
         if (err != OK) {
             CODEC_LOGE("setAACFormat() failed (err = %d)", err);
             return err;
-        }
-    } else if (!strcasecmp(MEDIA_MIMETYPE_AUDIO_MPEG, mMIME)) {
-        int32_t numChannels, sampleRate;
-        if (meta->findInt32(kKeyChannelCount, &numChannels)
-                && meta->findInt32(kKeySampleRate, &sampleRate)) {
-            // Since we did not always check for these, leave them optional
-            // and have the decoder figure it all out.
-            setRawAudioFormat(
-                    mIsEncoder ? kPortIndexInput : kPortIndexOutput,
-                    sampleRate,
-                    numChannels);
         }
     } else if (!strcasecmp(MEDIA_MIMETYPE_AUDIO_G711_ALAW, mMIME)
             || !strcasecmp(MEDIA_MIMETYPE_AUDIO_G711_MLAW, mMIME)) {
@@ -1346,8 +1430,7 @@ OMXCodec::OMXCodec(
       mLeftOverBuffer(NULL),
       mPaused(false),
       mNativeWindow(
-              (!strncmp(componentName, "OMX.google.", 11)
-              || !strcmp(componentName, "OMX.Nvidia.mpeg2v.decode"))
+              (!strncmp(componentName, "OMX.google.", 11))
                         ? NULL : nativeWindow) {
     mPortStatus[kPortIndexInput] = ENABLED;
     mPortStatus[kPortIndexOutput] = ENABLED;
@@ -1719,15 +1802,36 @@ status_t OMXCodec::allocateOutputBuffersFromNativeWindow() {
         return err;
     }
 
+    android_native_rect_t crop;
+    crop.left = 0;
+    crop.top = 0;
+    crop.right = def.format.video.nFrameWidth & (~3); //if no 4 aglin crop csy
+    crop.bottom = def.format.video.nFrameHeight;
+    int rga_fd = -1;
+    rga_fd  = open("/dev/rga",O_RDWR,0);
+    if (rga_fd > 0) {
     err = native_window_set_buffers_geometry(
             mNativeWindow.get(),
-            def.format.video.nFrameWidth,
-            def.format.video.nFrameHeight,
+        (def.format.video.nFrameWidth + 31)&(~31),
+        (def.format.video.nFrameHeight + 15)&(~15),
             def.format.video.eColorFormat);
+        close(rga_fd);
+    }else{
+        err = native_window_set_buffers_geometry(
+        mNativeWindow.get(),
+        (def.format.video.nFrameWidth + 15)&(~15),
+        (def.format.video.nFrameHeight + 15)&(~15),
+        def.format.video.eColorFormat);
+    }
 
     if (err != 0) {
         ALOGE("native_window_set_buffers_geometry failed: %s (%d)",
                 strerror(-err), -err);
+        return err;
+    }
+    err = native_window_set_crop(mNativeWindow.get(), &crop);
+    if (err != 0) {
+        ALOGE("native_window_set_cropfailed: %s (%d)",strerror(-err), -err);
         return err;
     }
 
@@ -2180,7 +2284,7 @@ void OMXCodec::on_message(const omx_message &msg) {
                 status_t err = freeBuffer(kPortIndexOutput, i);
                 CHECK_EQ(err, (status_t)OK);
 
-#if 0
+#if 1
             } else if (mPortStatus[kPortIndexOutput] == ENABLED
                        && (flags & OMX_BUFFERFLAG_EOS)) {
                 CODEC_LOGV("No more output data.");
@@ -2454,7 +2558,7 @@ void OMXCodec::onEvent(OMX_EVENTTYPE event, OMX_U32 data1, OMX_U32 data2) {
             break;
         }
 
-#if 0
+#if 1
         case OMX_EventBufferFlag:
         {
             CODEC_LOGV("EVENT_BUFFER_FLAG(%ld)", data1);
@@ -2462,6 +2566,7 @@ void OMXCodec::onEvent(OMX_EVENTTYPE event, OMX_U32 data1, OMX_U32 data2) {
             if (data1 == kPortIndexOutput) {
                 mNoMoreOutputData = true;
             }
+            mBufferFilled.signal();
             break;
         }
 #endif
@@ -3070,6 +3175,11 @@ bool OMXCodec::drainInputBuffer(BufferInfo *info) {
             break;
         }
 
+        if (srcBuffer && (srcBuffer->range_length() ==0)) {
+            srcBuffer->release();
+            srcBuffer = NULL;
+            continue;
+        }
         if (mFlags & kUseSecureInputBuffers) {
             info = findInputBufferByDataPointer(srcBuffer->data());
             CHECK(info != NULL);
@@ -3395,7 +3505,7 @@ void OMXCodec::setAMRFormat(bool isWAMR, int32_t bitRate) {
 }
 
 status_t OMXCodec::setAACFormat(
-        int32_t numChannels, int32_t sampleRate, int32_t bitRate, int32_t aacProfile, bool isADTS) {
+        int32_t numChannels, int32_t sampleRate, int32_t bitRate, int32_t aacProfile, bool isADTS, bool isLATM) {
     if (numChannels > 2) {
         ALOGW("Number of channels: (%d) \n", numChannels);
     }
@@ -3454,6 +3564,9 @@ status_t OMXCodec::setAACFormat(
         profile.nAACtools = OMX_AUDIO_AACToolAll;
         profile.nAACERtools = OMX_AUDIO_AACERNone;
         profile.eAACProfile = (OMX_AUDIO_AACPROFILETYPE) aacProfile;
+		if(isLATM)
+			profile.eAACStreamFormat = OMX_AUDIO_AACStreamFormatMP4LATM;
+		else
         profile.eAACStreamFormat = OMX_AUDIO_AACStreamFormatMP4FF;
         err = mOMX->setParameter(mNode, OMX_IndexParamAudioAac,
                 &profile, sizeof(profile));
@@ -3475,7 +3588,9 @@ status_t OMXCodec::setAACFormat(
 
         profile.nChannels = numChannels;
         profile.nSampleRate = sampleRate;
-
+		if(isLATM)
+			profile.eAACStreamFormat = OMX_AUDIO_AACStreamFormatMP4LATM;
+		else
         profile.eAACStreamFormat =
             isADTS
                 ? OMX_AUDIO_AACStreamFormatMP4ADTS
@@ -3873,9 +3988,15 @@ status_t OMXCodec::read(
             }
         }
     }
-
+    int32_t retrycount = 0;
+retry:
     while (mState != ERROR && !mNoMoreOutputData && mFilledBuffers.empty()) {
         if ((err = waitForBufferFilled_l()) != OK) {
+           if(retrycount++ < 20)
+           {
+                goto retry;
+           }
+           ALOGE("omx read decoder frame timeout");
             return err;
         }
     }
@@ -4393,6 +4514,23 @@ void OMXCodec::initOutputFormat(const sp<MetaData> &inputFormat) {
                             ? numChannels : params.nChannels);
 
                 mOutputFormat->setInt32(kKeySampleRate, params.nSamplingRate);
+
+                /*
+                 ** samplerate of G711 audio file is not always 8K(default output samplerate of SoftG711).
+                */
+                OMX_PARAM_PORTDEFINITIONTYPE def_input;
+                InitOMXParams(&def_input);
+                def_input.nPortIndex = kPortIndexInput;
+
+                status_t err = mOMX->getParameter(
+                        mNode, OMX_IndexParamPortDefinition, &def_input, sizeof(def_input));
+                if (err == OK) {
+                    OMX_AUDIO_PORTDEFINITIONTYPE *audio_def_input = &def_input.format.audio;
+                    if (audio_def_input && (audio_def_input->eEncoding == OMX_AUDIO_CodingG711)) {
+                        inputFormat->findInt32(kKeySampleRate, &sampleRate);
+                        mOutputFormat->setInt32(kKeySampleRate, sampleRate);
+                    }
+                }
             } else if (audio_def->eEncoding == OMX_AUDIO_CodingAMR) {
                 OMX_AUDIO_PARAM_AMRTYPE amr;
                 InitOMXParams(&amr);
@@ -4584,6 +4722,7 @@ status_t QueryCodec(
 
     caps->mFlags = 0;
     caps->mComponentName = componentName;
+
 
     OMX_VIDEO_PARAM_PROFILELEVELTYPE param;
     InitOMXParams(&param);

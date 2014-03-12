@@ -76,6 +76,9 @@ struct ANetworkSession : public RefBase {
     status_t sendRequest(
             int32_t sessionID, const void *data, ssize_t size = -1,
             bool timeValid = false, int64_t timeUs = -1ll);
+    status_t sendTsPacket(
+            int32_t sessionID, const void *data, ssize_t size = -1,
+            bool timeValid = false, int64_t timeUs = -1ll);
 
     status_t switchToWebSocketMode(int32_t sessionID);
 
@@ -105,6 +108,7 @@ private:
     int mPipeFd[2];
 
     KeyedVector<int32_t, sp<Session> > mSessions;
+    int	mReserved[100];
 
     enum Mode {
         kModeCreateUDPSession,

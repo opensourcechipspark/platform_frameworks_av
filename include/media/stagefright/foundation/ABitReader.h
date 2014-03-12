@@ -37,6 +37,7 @@ struct ABitReader {
 
     const uint8_t *data() const;
 
+	uint32_t showBits(size_t n);
 private:
     const uint8_t *mData;
     size_t mSize;

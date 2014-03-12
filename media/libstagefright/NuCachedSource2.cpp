@@ -186,10 +186,13 @@ NuCachedSource2::NuCachedSource2(
       mLooper(new ALooper),
       mCache(new PageCache(kPageSize)),
       mCacheOffset(0),
+      mFlag(0),
+      seek_en(false),
       mFinalStatus(OK),
       mLastAccessPos(0),
       mFetching(true),
       mLastFetchTimeUs(-1),
+	  update_pos(0),
       mNumRetriesLeft(kMaxNumRetries),
       mHighwaterThresholdBytes(kDefaultHighWaterThreshold),
       mLowwaterThresholdBytes(kDefaultLowWaterThreshold),
@@ -270,7 +273,11 @@ void NuCachedSource2::onMessageReceived(const sp<AMessage> &msg) {
             onRead(msg);
             break;
         }
-
+		case kWaitRead:
+		{
+			waitRead(msg);
+            break;
+        }
         default:
             TRESPASS();
     }
@@ -371,8 +378,17 @@ void NuCachedSource2::onFetch() {
         mLastFetchTimeUs = ALooper::GetNowUs();
 
         if (mFetching && mCache->totalSize() >= mHighwaterThresholdBytes) {
-            ALOGI("Cache full, done prefetching for now");
+			if (update_pos > mCacheOffset+kPageSize)
+			{
+				Mutex::Autolock autoLock(mLock);
+				size_t actualBytes = mCache->releaseFromStart(kPageSize);
+				mCacheOffset += actualBytes;
+			}
+			else
+			{
+//	            LOGI("Cache full, done prefetching for now");
             mFetching = false;
+			}
 
             if (mDisconnectAtHighwatermark
                     && (mSource->flags() & DataSource::kIsHTTPBasedSource)) {
@@ -381,6 +397,11 @@ void NuCachedSource2::onFetch() {
                 mFinalStatus = -EAGAIN;
             }
         }
+    } else if(update_pos > mCacheOffset+kPageSize)	{
+			Mutex::Autolock autoLock(mLock);
+		size_t actualBytes = mCache->releaseFromStart(kPageSize);
+		mCacheOffset += actualBytes;
+		mFetching = true;
     } else {
         Mutex::Autolock autoLock(mLock);
         restartPrefetcherIfNecessary_l();
@@ -416,17 +437,45 @@ void NuCachedSource2::onRead(const sp<AMessage> &msg) {
     ssize_t result = readInternal(offset, data, size);
 
     if (result == -EAGAIN) {
+        if(mFlag&LOCKRELEASE){
+            mCondition.signal();
+            return;
+        }
         msg->post(50000);
         return;
     }
 
     Mutex::Autolock autoLock(mLock);
 
-    CHECK(mAsyncResult == NULL);
+    if(mAsyncResult != NULL){
+        mAsyncResult.clear();
+    }
 
     mAsyncResult = new AMessage;
     mAsyncResult->setInt32("result", result);
 
+    mCondition.signal();
+}
+void NuCachedSource2::waitRead(const sp<AMessage> &msg) {
+    ALOGV("waitRead");
+    int64_t offset;
+    CHECK(msg->findInt64("offset", &offset));
+	if ((offset > mCacheOffset+mCache->totalSize())&&(mFinalStatus == OK))
+	{
+   
+        if(mFlag&LOCKRELEASE){
+            mCondition.signal();
+            return;
+        }
+        mFetching = true;
+		msg->post(50000);
+        return;
+	}
+    Mutex::Autolock autoLock(mLock);
+    if(mAsyncWait != NULL){
+        mAsyncWait.clear();
+    }
+    mAsyncWait = new AMessage;
     mCondition.signal();
 }
 
@@ -480,16 +529,45 @@ ssize_t NuCachedSource2::readAt(off64_t offset, void *data, size_t size) {
         return size;
     }
 
+	if (offset > mCacheOffset + mCache->totalSize())
+	{
+		if ((seek_en&&(offset - mCacheOffset - mCache->totalSize() < kDefaultHighWaterThreshold/4))||(offset - mCacheOffset - mCache->totalSize() < kDefaultLowWaterThreshold))
+		{
+		    sp<AMessage> msg = new AMessage(kWaitRead, mReflector->id());
+		    msg->setInt64("offset", offset);
+
+            if(mAsyncWait != NULL){
+                mAsyncWait.clear();
+            }
+		    msg->post();
+		    while (mAsyncWait == NULL) {
+               ALOGV("wait mAsyncWait mFlag %d",mFlag);
+		       mCondition.wait(mLock);
+               if(mFlag){
+                    ALOGI("INFO_TIME_OUT");
+                    return INFO_TIME_OUT;
+                }
+		    }
+			mAsyncWait.clear();
+		}
+	}
     sp<AMessage> msg = new AMessage(kWhatRead, mReflector->id());
     msg->setInt64("offset", offset);
     msg->setPointer("data", data);
     msg->setSize("size", size);
 
-    CHECK(mAsyncResult == NULL);
+    if(mAsyncResult != NULL){
+        mAsyncResult.clear();
+    }
+
     msg->post();
 
     while (mAsyncResult == NULL) {
+        ALOGV("wait mAsyncResult mFlag %d",mFlag);
         mCondition.wait(mLock);
+        if(mFlag){
+            return INFO_TIME_OUT;
+        }
     }
 
     int32_t result;
@@ -504,6 +582,17 @@ ssize_t NuCachedSource2::readAt(off64_t offset, void *data, size_t size) {
     return (ssize_t)result;
 }
 
+void NuCachedSource2::updatecache(off64_t offset)
+{
+	/*if (updatecache > offset)
+	{
+		if(offset > kLowWaterThreshold)
+			offset -= kLowWaterThreshold;
+		else
+			offset = 0;
+	}*/
+	update_pos = offset;
+}
 size_t NuCachedSource2::cachedSize() {
     Mutex::Autolock autoLock(mLock);
     return mCacheOffset + mCache->totalSize();
@@ -620,6 +709,29 @@ void NuCachedSource2::getDrmInfo(sp<DecryptHandle> &handle, DrmManagerClient **c
     mSource->getDrmInfo(handle, client);
 }
 
+void NuCachedSource2::set_palystate(unsigned value, FlagMode mode) {
+    switch (mode) {
+        case SET:
+        {
+            if(value&SEEKING){
+                seek_en = true;
+            }
+            mFlag |= value;
+        }
+            break;
+        case CLEAR:{
+            if(value&SEEKING){
+                seek_en = false;
+            }
+            mFlag &= ~value;
+        }
+            break;
+        default:
+            TRESPASS();
+    }
+    ALOGV("set_palystate mode %d mFlag %d",mode,mFlag);
+}
+
 String8 NuCachedSource2::getUri() {
     return mSource->getUri();
 }
@@ -686,6 +798,7 @@ void NuCachedSource2::RemoveCacheSpecificHeaders(
     *cacheConfig = String8();
     *disconnectAtHighwatermark = false;
 
+    return;  //add by csy for youtube apk
     if (headers == NULL) {
         return;
     }

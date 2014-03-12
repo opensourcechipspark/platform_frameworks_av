@@ -70,8 +70,9 @@ StagefrightRecorder::StagefrightRecorder()
       mOutputFd(-1),
       mAudioSource(AUDIO_SOURCE_CNT),
       mVideoSource(VIDEO_SOURCE_LIST_END),
-      mStarted(false), mSurfaceMediaSource(NULL),
-      mCaptureTimeLapse(false) {
+      mCaptureTimeLapse(false),
+      mStarted(false),
+      mSurfaceMediaSource(NULL) {
 
     ALOGV("Constructor");
     reset();
@@ -172,7 +173,7 @@ status_t StagefrightRecorder::setVideoEncoder(video_encoder ve) {
     }
 
     if (ve == VIDEO_ENCODER_DEFAULT) {
-        mVideoEncoder = VIDEO_ENCODER_H263;
+        mVideoEncoder = VIDEO_ENCODER_H264;
     } else {
         mVideoEncoder = ve;
     }
@@ -181,6 +182,8 @@ status_t StagefrightRecorder::setVideoEncoder(video_encoder ve) {
 }
 
 status_t StagefrightRecorder::setVideoSize(int width, int height) {
+	int low_quality_w,low_quality_h,high_quality_w,high_quality_h, framerate=-1,minFrameRate;
+    camcorder_quality quality=CAMCORDER_QUALITY_LOW;
     ALOGV("setVideoSize: %dx%d", width, height);
     if (width <= 0 || height <= 0) {
         ALOGE("Invalid video size: %dx%d", width, height);
@@ -190,6 +193,39 @@ status_t StagefrightRecorder::setVideoSize(int width, int height) {
     // Additional check on the dimension will be performed later
     mVideoWidth = width;
     mVideoHeight = height;
+	minFrameRate = mEncoderProfiles->getVideoEncoderParamByName("enc.vid.fps.min", mVideoEncoder);
+    if ((mFrameRate == -1) || (mFrameRate == minFrameRate)) {     /* ddl@rock-chips.com */
+        low_quality_w = mEncoderProfiles->getCamcorderProfileParamByName
+                        ("vid.width",mCameraId,CAMCORDER_QUALITY_LOW);
+        low_quality_h = mEncoderProfiles->getCamcorderProfileParamByName
+                        ("vid.height",mCameraId,CAMCORDER_QUALITY_LOW);
+        high_quality_w = mEncoderProfiles->getCamcorderProfileParamByName
+                        ("vid.width",mCameraId,CAMCORDER_QUALITY_HIGH);
+        high_quality_h = mEncoderProfiles->getCamcorderProfileParamByName
+                        ("vid.height",mCameraId,CAMCORDER_QUALITY_HIGH);
+        if ((width == low_quality_w) && (height == low_quality_h)) {
+            quality = CAMCORDER_QUALITY_LOW;
+        } else if ((width == high_quality_w) && (height == high_quality_h)) {
+            quality = CAMCORDER_QUALITY_HIGH;
+        } else if ((width == 176) && (height == 144)) {
+            quality = CAMCORDER_QUALITY_QCIF;
+        } else if ((width == 352) && (height == 288)) {
+            quality = CAMCORDER_QUALITY_CIF;
+        } else if ((width == 320) && (height == 240)) {
+            quality = CAMCORDER_QUALITY_QVGA;
+        } else if (height == 480) {
+            quality = CAMCORDER_QUALITY_480P;
+        } else if ((width == 1280) && (height == 720)) {
+            quality = CAMCORDER_QUALITY_720P;
+        } else if ((width == 1920) && (height == 1080)) {
+            quality = CAMCORDER_QUALITY_1080P;
+        } 
+        framerate = mEncoderProfiles->getCamcorderProfileParamByName
+                    ("vid.fps",mCameraId,quality);
+        setVideoFrameRate(framerate);
+        ALOGW("Intended video encoding frame rate (%d fps) is too small"
+             " and will be set to (%d fps quality: %d)", mFrameRate, framerate,quality);
+    }
 
     return OK;
 }
@@ -1089,7 +1125,25 @@ void StagefrightRecorder::clipVideoFrameWidth() {
     }
 }
 
-status_t StagefrightRecorder::checkVideoEncoderCapabilities() {
+status_t StagefrightRecorder::checkVideoEncoderCapabilities(
+        bool *supportsCameraSourceMetaDataMode) {
+    /* hardware codecs must support camera source meta data mode */
+    Vector<CodecCapabilities> codecs;
+    OMXClient client;
+    CHECK_EQ(client.connect(), (status_t)OK);
+#if 0	
+    QueryCodecs(
+            client.interface(),
+            (mVideoEncoder == VIDEO_ENCODER_H263 ? MEDIA_MIMETYPE_VIDEO_H263 :
+             mVideoEncoder == VIDEO_ENCODER_MPEG_4_SP ? MEDIA_MIMETYPE_VIDEO_MPEG4 :
+             mVideoEncoder == VIDEO_ENCODER_H264 ? MEDIA_MIMETYPE_VIDEO_AVC : ""),
+            false /* decoder */, true /* hwCodec */, &codecs);
+    *supportsCameraSourceMetaDataMode = codecs.size() > 0;
+    ALOGV("encoder %s camera source meta-data mode",
+            *supportsCameraSourceMetaDataMode ? "supports" : "DOES NOT SUPPORT");
+#else
+	*supportsCameraSourceMetaDataMode = true;
+#endif
     if (!mCaptureTimeLapse) {
         // Dont clip for time lapse capture as encoder will have enough
         // time to encode because of slow capture rate of time lapse.
@@ -1307,7 +1361,9 @@ status_t StagefrightRecorder::setupSurfaceMediaSource() {
 status_t StagefrightRecorder::setupCameraSource(
         sp<CameraSource> *cameraSource) {
     status_t err = OK;
-    if ((err = checkVideoEncoderCapabilities()) != OK) {
+    bool encoderSupportsCameraSourceMetaDataMode;
+    if ((err = checkVideoEncoderCapabilities(
+                &encoderSupportsCameraSourceMetaDataMode)) != OK) {
         return err;
     }
     Size videoSize;
@@ -1323,13 +1379,14 @@ status_t StagefrightRecorder::setupCameraSource(
         mCameraSourceTimeLapse = CameraSourceTimeLapse::CreateFromCamera(
                 mCamera, mCameraProxy, mCameraId, mClientName, mClientUid,
                 videoSize, mFrameRate, mPreviewSurface,
-                mTimeBetweenTimeLapseFrameCaptureUs);
+                mTimeBetweenTimeLapseFrameCaptureUs,
+                encoderSupportsCameraSourceMetaDataMode);
         *cameraSource = mCameraSourceTimeLapse;
     } else {
         *cameraSource = CameraSource::CreateFromCamera(
                 mCamera, mCameraProxy, mCameraId, mClientName, mClientUid,
                 videoSize, mFrameRate,
-                mPreviewSurface, true /*storeMetaDataInVideoBuffers*/);
+                mPreviewSurface, encoderSupportsCameraSourceMetaDataMode);
     }
     mCamera.clear();
     mCameraProxy.clear();
@@ -1667,7 +1724,7 @@ status_t StagefrightRecorder::reset() {
     mAudioChannels = 1;
     mAudioBitRate  = 12200;
     mInterleaveDurationUs = 0;
-    mIFramesIntervalSec = 1;
+    mIFramesIntervalSec = 3;
     mAudioSourceNode = 0;
     mUse64BitFileOffset = false;
     mMovieTimeScale  = -1;

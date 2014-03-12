@@ -243,13 +243,15 @@ status_t OMXNodeInstance::freeNode(OMXMaster *master) {
 status_t OMXNodeInstance::sendCommand(
         OMX_COMMANDTYPE cmd, OMX_S32 param) {
     const sp<GraphicBufferSource>& bufferSource(getGraphicBufferSource());
-    if (bufferSource != NULL
-            && cmd == OMX_CommandStateSet
-            && param == OMX_StateLoaded) {
+    if (bufferSource != NULL && cmd == OMX_CommandStateSet) {
+        if (param == OMX_StateIdle) {
+            bufferSource->omxIdle();
+        } else if (param == OMX_StateLoaded) {
         // Initiating transition from Executing -> Loaded
         // Buffers are about to be freed.
         bufferSource->omxLoaded();
         setGraphicBufferSource(NULL);
+        }
 
         // fall through
     }

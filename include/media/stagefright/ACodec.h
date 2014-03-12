@@ -116,6 +116,7 @@ private:
         kWhatStart                   = 'star',
         kWhatRequestIDRFrame         = 'ridr',
         kWhatSetParameters           = 'setP',
+        kWhatSubmitOutputMetaDataBufferIfEOS = 'subm',
     };
 
     enum {
@@ -212,6 +213,7 @@ private:
             OMX_U32 *nMinUndequeuedBuffers);
     status_t allocateOutputMetaDataBuffers();
     status_t submitOutputMetaDataBuffer();
+    void signalSubmitOutputMetaDataBufferIfEOS_workaround();
     status_t allocateOutputBuffersFromNativeWindow();
     status_t cancelBufferToNativeWindow(BufferInfo *info);
     status_t freeOutputBuffersNotOwnedByComponent();
@@ -245,7 +247,7 @@ private:
     status_t setupAACCodec(
             bool encoder,
             int32_t numChannels, int32_t sampleRate, int32_t bitRate,
-            int32_t aacProfile, bool isADTS);
+            int32_t aacProfile, bool isADTS,bool flags,int32_t info);
 
     status_t selectAudioPortFormat(
             OMX_U32 portIndex, OMX_AUDIO_CODINGTYPE desiredFormat);
@@ -257,13 +259,14 @@ private:
             bool encoder, int32_t numChannels, int32_t sampleRate, int32_t compressionLevel);
 
     status_t setupRawAudioFormat(
-            OMX_U32 portIndex, int32_t sampleRate, int32_t numChannels);
+        OMX_U32 portIndex, int32_t sampleRate, int32_t numChannels,bool flags=0,int32_t info=0);
 
     status_t setMinBufferSize(OMX_U32 portIndex, size_t size);
 
     status_t setupMPEG4EncoderParameters(const sp<AMessage> &msg);
     status_t setupH263EncoderParameters(const sp<AMessage> &msg);
     status_t setupAVCEncoderParameters(const sp<AMessage> &msg);
+    status_t setupVPXEncoderParameters(const sp<AMessage> &msg);
 
     status_t verifySupportForProfileAndLevel(int32_t profile, int32_t level);
 

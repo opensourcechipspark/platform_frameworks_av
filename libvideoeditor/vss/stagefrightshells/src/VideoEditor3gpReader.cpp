@@ -1672,7 +1672,10 @@ M4OSA_ERR VideoEditor3gpReader_getNextStreamHandler(M4OSA_Context context,
             }
             else if(!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_AAC)) {
                 streamType = M4DA_StreamTypeAudioAac;
-            } else {
+            }
+            else if(!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_MPEG)) {
+                streamType = M4DA_StreamTypeAudioMp3;
+            }else {
                 ALOGV("VideoEditor3gpReader_getNextStrea streamtype Unknown ");
             }
             if(streamType != M4DA_StreamTypeUnknown) {
@@ -1766,7 +1769,8 @@ M4OSA_ERR VideoEditor3gpReader_getNextStreamHandler(M4OSA_Context context,
                 }
                 (*pStreamHandler)->m_averageBitRate =
                     VideoEditor3gpReader_AmrBitRate[freqIndex][7];
-            } else if((M4DA_StreamTypeAudioAac == streamType)) {
+            } else if((M4DA_StreamTypeAudioAac == streamType) ||
+                (M4DA_StreamTypeAudioMp3 == streamType)) {
                 if (meta->findData(kKeyESDS, &type, &data, &size)) {
                     ESDS esds((const char *)data, size);
                     CHECK_EQ(esds.InitCheck(), (status_t)OK);
