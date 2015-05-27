@@ -34,7 +34,8 @@
 #include <ui/GraphicBuffer.h>
 
 namespace android {
-
+FILE* omx_tx_ts = NULL;
+extern FILE* omx_txt;
 MediaSender::MediaSender(
         const sp<ANetworkSession> &netSession,
         const sp<AMessage> &notify)
@@ -223,18 +224,18 @@ status_t MediaSender::queueAccessUnit(
 
             for (size_t i = 0; i < mTrackInfos.size(); ++i) {
                 const TrackInfo &info = mTrackInfos.itemAt(i);
-
+#if 1//jmj
                 if (info.mAccessUnits.empty()) {
                     minTrackIndex = -1;
                     minTimeUs = -1ll;
-                    break;
+                    continue;
                 }
-
+#endif
                 int64_t timeUs;
                 const sp<ABuffer> &accessUnit = *info.mAccessUnits.begin();
                 CHECK(accessUnit->meta()->findInt64("timeUs", &timeUs));
-
-                if (minTrackIndex < 0 || timeUs < minTimeUs) {
+				 
+                if (minTrackIndex < 0){// jmj   || timeUs < minTimeUs) {
                     minTrackIndex = i;
                     minTimeUs = timeUs;
                 }
@@ -256,15 +257,50 @@ status_t MediaSender::queueAccessUnit(
                 if (mLogFile != NULL) {
                     fwrite(tsPackets->data(), 1, tsPackets->size(), mLogFile);
                 }
-
+              if(1)
+          		{
+          			int retrtptxt;
+          			if((retrtptxt = access("/data/test/omx_tx_ts_file",0)) == 0)//test_file!=NULL)
+          			{	
+          				
+          				if(omx_tx_ts == NULL)
+          					omx_tx_ts = fopen("/data/test/omx_tx_ts.ts","wb");
+          				if(omx_tx_ts != NULL)
+          				{
+          					fwrite(tsPackets->data(), 1, tsPackets->size(), omx_tx_ts);
+          						
+          					fflush(omx_tx_ts);
+          				}
+          				
+          			}
+          		  }	
                 int64_t timeUs;
                 CHECK(accessUnit->meta()->findInt64("timeUs", &timeUs));
                 tsPackets->meta()->setInt64("timeUs", timeUs);
-
+                {
+                  	int retrtptxt;
+			       int64_t sys_time= systemTime(SYSTEM_TIME_MONOTONIC) / 1000;  
+                  	if((retrtptxt = access("data/test/omx_txt_file",0)) == 0)//test_file!=NULL)
+                  	{	
+                  		if(omx_txt == NULL)
+                  			omx_txt = fopen("data/test/omx_txt.txt","ab");
+                  		else
+                  		{
+                  		  if(!info->mIsAudio)
+                  			fprintf(omx_txt,"MediaSender::queueAccessUnit Video  time sys %lld %lld delta %lld\n",
+                  			 	sys_time ,timeUs,sys_time - timeUs);
+                        else
+                          fprintf(omx_txt,"MediaSender::queueAccessUnit Audio  time sys  %lld %lld delta %lld\n",
+                  			 	sys_time,timeUs,sys_time - timeUs);
+                  			fflush(omx_txt);
+                  		}
+                  	}
+                }
                 err = mTSSender->queueBuffer(
                         tsPackets,
                         33 /* packetType */,
                         RTPSender::PACKETIZATION_TRANSPORT_STREAM);
+                
             }
 
             if (err != OK) {

@@ -164,7 +164,16 @@ void MediaPuller::onMessageReceived(const sp<AMessage> &msg) {
             } else {
                 int64_t timeUs;
                 CHECK(mbuf->meta_data()->findInt64(kKeyTime, &timeUs));
+				if(mIsAudio)
+				{
 
+					if(timeUs < 20000ll)
+					{
+						timeUs = timeUs/10;
+					}
+					else
+						timeUs = timeUs - 22000ll;
+				}
                 sp<ABuffer> accessUnit = new ABuffer(mbuf->range_length());
 
                 memcpy(accessUnit->data(),
@@ -193,7 +202,9 @@ void MediaPuller::onMessageReceived(const sp<AMessage> &msg) {
                 }
 
                 schedulePull();
+                
             }
+             
             break;
         }
 

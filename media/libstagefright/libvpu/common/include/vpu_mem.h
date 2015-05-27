@@ -8,6 +8,7 @@ extern "C"
 {
 #endif
 
+//#include "../vpu_mem_pool/classmagic.h"
 #include "vpu_type.h"
 /* Linear memory area descriptor */
 
@@ -35,6 +36,10 @@ RK_U32 *VPUMemVirtual(VPUMemLinear_t *p);
 RK_S32 VPUMemPoolSet(RK_U32 size, RK_U32 count);
 RK_S32 VPUMemPoolUnset(RK_U32 size, RK_U32 count);
 RK_S32 VPUMemGetFreeSize();
+RK_S32 VPUMallocLinearFromRender(VPUMemLinear_t *p, RK_U32 size, void *ctx);
+RK_S32 VPUMemGetFD(VPUMemLinear_t *p);
+RK_S32 VPUMemGetREF(VPUMemLinear_t *p);
+RK_S32 VPUMemJudgeIommu();
 
 // new malloc interface by with allocator for memory management
 typedef void*   RK_HANDLE;

@@ -2996,7 +2996,6 @@ M4OSA_Void prepareYV12ImagePlane(M4VIFI_ImagePlane *plane,
     plane[0].u_topleft = 0;
     plane[0].pac_data = buffer;
 
-#if 0
     // U plane
     plane[1].u_width = width/2;
     plane[1].u_height = height/2;
@@ -3014,21 +3013,6 @@ M4OSA_Void prepareYV12ImagePlane(M4VIFI_ImagePlane *plane,
     plane[2].u_topleft = 0;
     plane[2].pac_data = (buffer +
      plane[0].u_height * android::PreviewRenderer::ALIGN(plane[0].u_stride, 16));
-#else
-    plane[2].u_width = width/2;
-    plane[2].u_height = height/2;
-    plane[2].u_stride = plane[0].u_stride / 2;
-    plane[2].u_topleft = 0;
-    plane[2].pac_data = (buffer
-                + plane[0].u_height * plane[0].u_stride
-                + (plane[0].u_height/2) * (plane[0].u_stride / 2));
-    plane[1].u_width = width/2;
-    plane[1].u_height = height/2;
-    plane[1].u_stride = plane[0].u_stride / 2;
-    plane[1].u_topleft = 0;
-    plane[1].pac_data = (buffer +
-     plane[0].u_height * plane[0].u_stride);
-#endif
 
 
 }
@@ -3615,7 +3599,7 @@ android::status_t getVideoSizeByResolution(
 
         case M4VIDEOEDITING_kQQVGA:
             frameWidth = 160;
-            frameHeight = ((120 + 0xF) & (~0xF));
+            frameHeight = 120;
             break;
 
         case M4VIDEOEDITING_kQCIF:
@@ -3650,7 +3634,7 @@ android::status_t getVideoSizeByResolution(
 
         case M4VIDEOEDITING_k640_360:
             frameWidth = 640;
-            frameHeight = ((360 + 0xF) & (~0xF));
+            frameHeight = 360;
             break;
 
         case M4VIDEOEDITING_k854_480:
@@ -3664,7 +3648,7 @@ android::status_t getVideoSizeByResolution(
             break;
 
         case M4VIDEOEDITING_k1080_720:
-            frameWidth = ((1080 + 0xF) & (~0xF));
+            frameWidth = 1080;
             frameHeight = 720;
             break;
 
@@ -3675,7 +3659,7 @@ android::status_t getVideoSizeByResolution(
 
         case M4VIDEOEDITING_k1920_1080:
             frameWidth = 1920;
-            frameHeight = ((1080 + 0xF) & (~0xF));
+            frameHeight = 1080;
             break;
 
         default:
@@ -3873,7 +3857,6 @@ M4OSA_ERR applyVideoRotation(M4OSA_Void* pBuffer, M4OSA_UInt32 width,
     switch(rotation) {
         case 90:
             M4VIFI_Rotate90RightYUV420toYUV420(M4OSA_NULL, planeIn, planeOut);
-            memset(pBuffer, 0, (width*height*1.5));
             memcpy(pBuffer, (void *)outPtr, (width*height*1.5));
             break;
 
@@ -3884,7 +3867,6 @@ M4OSA_ERR applyVideoRotation(M4OSA_Void* pBuffer, M4OSA_UInt32 width,
 
         case 270:
             M4VIFI_Rotate90LeftYUV420toYUV420(M4OSA_NULL, planeIn, planeOut);
-            memset(pBuffer, 0, (width*height*1.5));
             memcpy(pBuffer, (void *)outPtr, (width*height*1.5));
             break;
 

@@ -1093,7 +1093,7 @@ void MPEG2TSExtractor::init() {
             }
         }
 
-        if ((++numPacketsParsed > 10000 && haveVideo) || (numPacketsParsed > 50000)||(GPU_STRM == mType && haveAudio )) {
+        if ((++numPacketsParsed > 50000 && haveVideo) || (numPacketsParsed > 80000)||(GPU_STRM == mType && haveAudio )) {
             break;
         }
     }

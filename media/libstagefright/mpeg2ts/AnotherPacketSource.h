@@ -68,6 +68,7 @@ struct AnotherPacketSource : public MediaSource {
     bool mIsAudio;
     bool discontinuityFlag;
     bool isFinished(int64_t duration) const;
+	sp<AMessage> getLatestMeta();
     int32_t mType;
     uint32_t mProgramID;
     unsigned mElementaryPID;
@@ -85,6 +86,7 @@ private:
     List<sp<ABuffer> > mBuffers;
     Vector<MediaBuffer *> mMediaBuffers;
     status_t mEOSResult;
+    sp<AMessage> mLatestEnqueuedMeta;
 
     bool wasFormatChange(int32_t discontinuityType) const;
 

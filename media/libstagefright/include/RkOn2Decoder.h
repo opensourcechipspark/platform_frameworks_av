@@ -22,17 +22,13 @@
 #include <media/stagefright/MediaSource.h>
 #include <utils/Vector.h>
 #include "vpu_api.h"
-
-typedef struct On2TimeStampTrace {
-    int64_t     pre_timeUs;
-    uint32_t    same_cnt;
-    uint32_t    init;
-}On2TimeStampTrace_t;
+#include "vpu_mem_pool.h"
 
 typedef enum On2DecoderMap {
 
     FIRST_FRAME         =   0x01,
     HAVE_SEEK_REQUEST   =   0x02,
+    MBAFF_MODE_INFO_CHANGE = 0x04,
 };
 
 typedef struct On2DecoderSeekRequest {
@@ -41,7 +37,6 @@ typedef struct On2DecoderSeekRequest {
 }On2DecoderSeekRequest_t;
 
 typedef struct On2DecoderPrivate{
-    On2TimeStampTrace_t time_trace;
     int32_t flags;
     On2DecoderSeekRequest_t seek_req ;
 }On2DecPrivate_t;
@@ -65,7 +60,7 @@ struct RkOn2Decoder : public MediaSource,
 
     void SetParameterForWimo(const sp<MediaSource> &source);
 
-    status_t postProcessTimeStamp(int64_t *inTimeUs, int64_t *outTimeUs);
+    int32_t checkVideoInfoChange(void* aFrame);
 protected:
     virtual ~RkOn2Decoder();
 
@@ -94,7 +89,7 @@ private:
 
     uint32_t getwhFlg;
     On2DecPrivate_t mOn2DecPrivate;
-
+    vpu_display_mem_pool        *mPool;
     RkOn2Decoder(const RkOn2Decoder &);
     RkOn2Decoder &operator=(const RkOn2Decoder &);
 };

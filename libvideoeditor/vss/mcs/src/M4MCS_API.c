@@ -9051,6 +9051,13 @@ static M4OSA_ERR M4MCS_intVideoNullEncoding( M4MCS_InternalContext *pC )
             (M4_StreamHandler *)pC->pReaderVideoStream,
             &pC->ReaderVideoAU1);
 
+        if (pC->ReaderVideoAU1.m_CTS <pC->ReaderVideoAU2.m_CTS) {
+            M4OSA_Double tmp = pC->ReaderVideoAU1.m_CTS;
+            pC->ReaderVideoAU1.m_CTS = pC->ReaderVideoAU2.m_CTS;
+            pC->ReaderVideoAU2.m_CTS = tmp;
+        }
+
+
         if( pC->ReaderVideoAU1.m_maxsize
             > pC->pReaderVideoStream->m_basicProperties.m_maxAUSize )
         {
@@ -9084,6 +9091,12 @@ static M4OSA_ERR M4MCS_intVideoNullEncoding( M4MCS_InternalContext *pC )
         err = pC->m_pReaderDataIt->m_pFctGetNextAu(pC->pReaderContext,
             (M4_StreamHandler *)pC->pReaderVideoStream,
             &pC->ReaderVideoAU2);
+
+        if (pC->ReaderVideoAU2.m_CTS <pC->ReaderVideoAU1.m_CTS) {
+            M4OSA_Double tmp = pC->ReaderVideoAU1.m_CTS;
+            pC->ReaderVideoAU1.m_CTS = pC->ReaderVideoAU2.m_CTS;
+            pC->ReaderVideoAU2.m_CTS = tmp;
+        }
 
         if( pC->ReaderVideoAU2.m_maxsize
             > pC->pReaderVideoStream->m_basicProperties.m_maxAUSize )

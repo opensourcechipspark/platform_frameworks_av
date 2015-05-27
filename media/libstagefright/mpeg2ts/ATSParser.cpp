@@ -618,7 +618,6 @@ status_t ATSParser::Program::parseProgramMap(ABitReader *br) {
             return ERROR_MALFORMED;
         }
     }
-
     for (size_t i = 0; i < infos.size(); ++i) {
         StreamInfo &info = infos.editItemAt(i);
 
@@ -630,6 +629,20 @@ status_t ATSParser::Program::parseProgramMap(ABitReader *br) {
 
             mStreams.add(info.mPID, stream);
         }
+    }
+
+
+    bool hasVideo = false;
+	for (size_t i = 0; i < mStreams.size(); ++i) {
+        hasVideo = mStreams.editValueAt(i)->is_video;
+        if(hasVideo){
+                    break;
+            }
+        }
+
+    if(!hasVideo){ //add by csy for check if only have audio
+        ALOGI("no have video found hasVideo");
+        player_type = 6;
     }
     if(player_type)
     {

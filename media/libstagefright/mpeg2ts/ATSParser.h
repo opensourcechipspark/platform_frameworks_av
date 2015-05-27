@@ -75,8 +75,9 @@ struct ATSParser : public RefBase {
 	void signalSeek();
     void createLiveProgramID(unsigned AudioPID,unsigned AudioType,unsigned VideoPID,unsigned VideoType);
     enum SourceType {
-        VIDEO,
-        AUDIO
+        VIDEO = 0,
+        AUDIO = 1,
+        NUM_SOURCE_TYPES = 2
     };
     sp<MediaSource> getSource(SourceType type,uint32_t& ProgramID,unsigned& elementaryPID);
     sp<MediaSource> getSource(SourceType type);
@@ -106,7 +107,7 @@ struct ATSParser : public RefBase {
 		STREAMTYPE_DTS_HD               = 0x85,
 		STREAMTYPE_DTS_HD_MASTER        = 0x86,
 		STREAMTYPE_VC1                  = 0xea,
-		STREAMTYPE_HEVC                 = 0xeb,
+		STREAMTYPE_HEVC                 = 0x24,
 		STREAMTYPE_PCM                  = 0x80
     };
 

@@ -34,6 +34,7 @@ extern const char *MEDIA_MIMETYPE_VIDEO_MJPEG;
 extern const char *MEDIA_MIMETYPE_VIDEO_REALVIDEO;
 extern const char *MEDIA_MIMETYPE_VIDEO_FLV;
 extern const char *MEDIA_MIMETYPE_VIDEO_VC1;
+extern const char *MEDIA_MIMETYPE_VIDEO_WMV3;
 extern const char *MEDIA_MIMETYPE_VIDEO_VP6;
 
 extern const char *MEDIA_MIMETYPE_AUDIO_AMR_NB;

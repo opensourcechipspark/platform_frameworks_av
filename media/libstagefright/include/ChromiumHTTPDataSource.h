@@ -37,7 +37,6 @@ struct ChromiumHTTPDataSource : public HTTPBase {
 
     virtual void disconnect();
 
-	virtual String8 getRealUrl();
     virtual status_t initCheck() const;
 
     virtual ssize_t readAt(off64_t offset, void *data, size_t size);
@@ -114,6 +113,7 @@ private:
     void onConnectionFailed(status_t err);
     void onReadCompleted(ssize_t size);
     void onDisconnectComplete();
+    void onRedirect(const char *url);
 
     void clearDRMState_l();
 

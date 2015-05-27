@@ -828,6 +828,13 @@ bool SniffFLAC(
     if (source->readAt(0, header, sizeof(header)) != sizeof(header)
             || memcmp("fLaC\0\0\0\042", header, 4+4))
     {
+		if(!memcmp("fLaC",header,4))
+       	{
+		   *mimeType = MEDIA_MIMETYPE_AUDIO_FLAC;
+		   *confidence = 0.5;
+		     return true;
+
+	 	}
         return false;
     }
 

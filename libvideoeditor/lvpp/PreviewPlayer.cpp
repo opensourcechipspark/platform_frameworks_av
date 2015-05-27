@@ -304,11 +304,7 @@ void PreviewPlayer::reset_l() {
     mAudioPlayer = NULL;
 
     if (mVideoBuffer) {
-        if (mIsVideoSourceJpg) {
         mVideoBuffer->release();
-        } else {
-            mVideoBuffer->releaseframe();
-        }
         mVideoBuffer = NULL;
     }
 
@@ -881,11 +877,7 @@ void PreviewPlayer::onVideoEvent() {
                 if (videoTimeUs < mSeekTimeUs) {
                     // buffers are before seek time
                     // ignore them
-                    if (mIsVideoSourceJpg) {
                     mVideoBuffer->release();
-                    } else {
-                        mVideoBuffer->releaseframe();
-                    }
                     mVideoBuffer = NULL;
                     continue;
                 }
@@ -893,11 +885,7 @@ void PreviewPlayer::onVideoEvent() {
                 if((videoTimeUs/1000) < mPlayBeginTimeMsec) {
                     // Frames are before begin cut time
                     // Donot render
-                    if (mIsVideoSourceJpg) {
                     mVideoBuffer->release();
-                    } else {
-                        mVideoBuffer->releaseframe();
-                    }
                     mVideoBuffer = NULL;
                     continue;
                 }
@@ -936,11 +924,7 @@ void PreviewPlayer::onVideoEvent() {
     TimeSource *ts = (mFlags & AUDIO_AT_EOS) ? &mSystemTimeSource : mTimeSource;
 
     if(ts == NULL) {
-        if (mIsVideoSourceJpg) {
         mVideoBuffer->release();
-        } else {
-            mVideoBuffer->releaseframe();
-        }
         mVideoBuffer = NULL;
         return;
     }
@@ -968,7 +952,7 @@ void PreviewPlayer::onVideoEvent() {
         }
         ALOGV("Audio time stamp = %lld and video time stamp = %lld",
                                             ts->getRealTimeUs(),timeUs);
-        /*if (latenessUs > 40000) {
+        if (latenessUs > 40000) {
             // We're more than 40ms late.
 
             ALOGV("LV PLAYER we're late by %lld us (%.2f secs)",
@@ -978,7 +962,7 @@ void PreviewPlayer::onVideoEvent() {
             mVideoBuffer = NULL;
             postVideoEvent_l(0);
             return;
-        }*/
+        }
 
         if (latenessUs < -25000) {
             // We're more than 25ms early.
@@ -1000,11 +984,7 @@ void PreviewPlayer::onVideoEvent() {
 
     // If timestamp exceeds endCutTime of clip, donot render
     if((timeUs/1000) > mPlayEndTimeMsec) {
-        if (mIsVideoSourceJpg) {
         mVideoBuffer->release();
-        } else {
-            mVideoBuffer->releaseframe();
-        }
         mVideoBuffer = NULL;
         mFlags |= VIDEO_AT_EOS;
         mFlags |= AUDIO_AT_EOS;
@@ -1086,11 +1066,7 @@ void PreviewPlayer::onVideoEvent() {
                 mRenderingMode, mIsVideoSourceJpg);
     }
 
-    if (mIsVideoSourceJpg) {
     mVideoBuffer->release();
-    } else {
-        mVideoBuffer->releaseframe();
-    }
     mVideoBuffer = NULL;
 
     // Post progress callback based on callback interval set
@@ -1229,7 +1205,7 @@ void PreviewPlayer::onPrepareAsyncEvent() {
     }
 
     if (mVideoTrack != NULL && mVideoSource == NULL) {
-        status_t err = initVideoDecoder_l(OMXCodec::kSoftwareCodecsOnly);
+        status_t err = initVideoDecoder_l(OMXCodec::kHardwareCodecsOnly);
 
         if (err != OK) {
             abortPrepare(err);
@@ -1497,17 +1473,7 @@ status_t PreviewPlayer::readFirstVideoFrame() {
                     mSeekTimeUs, MediaSource::ReadOptions::SEEK_CLOSEST);
         }
         for (;;) {
-            status_t err = OK;
-
-            if (mVideoSource != NULL) {
-                err = mVideoSource->read(&mVideoBuffer, &options);
-            } else {
-                mFlags |= VIDEO_AT_EOS;
-                mFlags |= AUDIO_AT_EOS;
-                postStreamDoneEvent_l(err);
-                return OK;
-            }
-
+            status_t err = mVideoSource->read(&mVideoBuffer, &options);
             options.clearSeekTo();
 
             if (err != OK) {
@@ -1525,15 +1491,8 @@ status_t PreviewPlayer::readFirstVideoFrame() {
                         }
                     }
 
-                    if (mVideoSource !=NULL) {
-                        updateSizeToRender(mVideoSource->getFormat());
-                        continue;
-                    } else {
-                        mFlags |= VIDEO_AT_EOS;
-                        mFlags |= AUDIO_AT_EOS;
-                        postStreamDoneEvent_l(err);
-                        return OK;
-                    }
+                    updateSizeToRender(mVideoSource->getFormat());
+                    continue;
                 }
                 ALOGV("EOS reached.");
                 mFlags |= VIDEO_AT_EOS;
@@ -1557,11 +1516,7 @@ status_t PreviewPlayer::readFirstVideoFrame() {
                 if (videoTimeUs < mSeekTimeUs) {
                     // buffers are before seek time
                     // ignore them
-                    if (mIsVideoSourceJpg) {
                     mVideoBuffer->release();
-                    } else {
-                        mVideoBuffer->releaseframe();
-                    }
                     mVideoBuffer = NULL;
                     continue;
                 }
@@ -1569,11 +1524,7 @@ status_t PreviewPlayer::readFirstVideoFrame() {
                 if ((videoTimeUs/1000) < mPlayBeginTimeMsec) {
                     // buffers are before begin cut time
                     // ignore them
-                    if (mIsVideoSourceJpg) {
                     mVideoBuffer->release();
-                    } else {
-                        mVideoBuffer->releaseframe();
-                    }
                     mVideoBuffer = NULL;
                     continue;
                 }

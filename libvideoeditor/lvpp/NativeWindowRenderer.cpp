@@ -26,17 +26,6 @@
 #include <media/stagefright/MetaData.h>
 #include <media/stagefright/foundation/ADebug.h>
 #include "VideoEditorTools.h"
-#include "vpu_global.h"
-#include <linux/android_pmem.h>
-#include "gralloc_priv.h"
-#include <sys/ioctl.h>
-#include <fcntl.h>
-
-#include <cutils/properties.h>
-
-#include "rk29-ipp.h"
-#include "rga.h"
-#include "version.h"
 
 #define CHECK_EGL_ERROR CHECK(EGL_SUCCESS == eglGetError())
 #define CHECK_GL_ERROR CHECK(GLenum(GL_NO_ERROR) == glGetError())
@@ -136,11 +125,6 @@ static const char fSrcGradient[] =
 
 namespace android {
 
-typedef struct ROCK_CHIP_EXTENSION {
-    int32_t ipp_fd;
-    int32_t rga_fd;
-    RK_CHIP_TYPE chip_type;
-}RkExtensionData;
 NativeWindowRenderer::NativeWindowRenderer(sp<ANativeWindow> nativeWindow,
         int width, int height)
     : mNativeWindow(nativeWindow)
@@ -151,38 +135,6 @@ NativeWindowRenderer::NativeWindowRenderer(sp<ANativeWindow> nativeWindow,
     , mActiveInputs(0)
     , mThreadCmd(CMD_IDLE) {
     createThread(threadStart, this);
-    mRkExtenData = (RkExtensionData*)malloc(sizeof(RkExtensionData));
-    if (mRkExtenData == NULL) {
-        ALOGE("malloc memory for RkExtensionData fail!");
-        return;
-    }
-
-    memset(mRkExtenData, 0, sizeof(RkExtensionData));
-    ((RkExtensionData*)mRkExtenData)->ipp_fd = -1;
-    ((RkExtensionData*)mRkExtenData)->rga_fd = -1;
-
-    /* read sdk board system property */
-    RK_CHIP_TYPE rkChip =NONE;
-    ((RkExtensionData*)mRkExtenData)->rga_fd  = open("/dev/rga",O_RDWR,0);
-
-    if(((RkExtensionData*)mRkExtenData)->rga_fd  < 0)
-    {
-        rkChip = RK29;
-        ALOGE("open /dev/rk30-rga fail!");
-    } else {
-        rkChip = RK30;
-        ALOGI("open RGA device ok.");
-    }
-
-    ((RkExtensionData*)mRkExtenData)->ipp_fd  = open("/dev/rk29-ipp",O_RDWR,0);
-    if(((RkExtensionData*)mRkExtenData)->ipp_fd  < 0)
-    {
-        ALOGI("open /dev/rk29-ipp fail!, so use pp as default.");
-    } else {
-        ALOGI("open ipp device ok.");
-    }
-
-    ((RkExtensionData*)mRkExtenData)->chip_type = rkChip;
 }
 
 // The functions below run in the GL thread.
@@ -360,175 +312,18 @@ NativeWindowRenderer::~NativeWindowRenderer() {
     CHECK(mActiveInputs == 0);
     startRequest(CMD_QUIT);
     sendRequest();
-    int32_t rga_fd = ((RkExtensionData*)mRkExtenData)->rga_fd;
-    int32_t ipp_fd = ((RkExtensionData*)mRkExtenData)->ipp_fd;
-
-    if (rga_fd >0) {
-        if(rga_fd)
-        {
-    		close(rga_fd);
-    		rga_fd = -1;
-        }
-    }
-
-    if (ipp_fd >0) {
-        if(ipp_fd)
-        {
-    		close(ipp_fd);
-    		ipp_fd = -1;
-        }
-    }
-
-    if (mRkExtenData) {
-        free(mRkExtenData);
-        mRkExtenData = NULL;
-    }
 }
 
-void NativeWindowRenderer::yuv420torgb565(uint8_t *yaddr,
-        uint8_t *uaddr,
-        uint8_t *vaddr,
-        int16_t *rgbaddr,
-        uint32_t width,
-        uint32_t height)
-{
-    int i,j;
-    int r,g,b;
-    int u,v;
-    int dstwidth=0;
-    int dstHeight=0;
-
-    if ((yaddr == NULL) || (uaddr == NULL) || (vaddr == NULL) || (rgbaddr == NULL)) {
-        return;
-    }
-
-    if (((RkExtensionData*)mRkExtenData)->chip_type == RK30) {
-        dstwidth=(width+31)&(~31);
-        dstHeight=(height+15)&(~15);
-    } else {
-        dstwidth=(width+15)&(~15);
-        dstHeight=(height+15)&(~15);
-    }
-
-    for(i=0;i<height;i++)
-    {
-        for(j=0;j<width;j++)
-        {
-            u = uaddr[j>>1] - 128;
-            v = vaddr[j>>1] - 128;
-            r = (yaddr[j]*65536 + 74711*v)>>16;
-            g = (yaddr[j]*65536 - 25886*u - 38076*v)>>16;
-            b = (yaddr[j]*65536 + 133169*u)>>16;
-            if(r>255)r=255;
-            if(g>255)g=255;
-            if(b>255)b=255;
-            if(r<0)r=0;
-            if(g<0)g=0;
-            if(b<0)b=0;
-            rgbaddr[j] = ((b>>3)&0x1f) + ((g<<3)&0x7e0) + ((r<<8)&0xf800);
-        }
-
-        if (dstwidth >width) {
-            memset(&rgbaddr[width], 0, 2*(dstwidth-width));
-        }
-
-        yaddr  += width;
-        uaddr += ((i&1)*(width>>1));
-        vaddr += ((i&1)*(width>>1));
-        rgbaddr += dstwidth;
-    }
-
-    if (dstHeight >height) {
-        memset(rgbaddr, 0, 2*dstwidth*(dstHeight-height));
-    }
-}
 void NativeWindowRenderer::render(RenderInput* input) {
     sp<GLConsumer> ST = input->mST;
     sp<Surface> STC = input->mSTC;
 
-    uint32_t bufWidth = input->mWidth;
-    uint32_t bufHeight = input->mHeight;
-    if (input->mIsExternalBuffer == false) {
-        bufWidth = (input->mWidth + 15)&(~15);
-        bufHeight = (input->mHeight + 15)&(~15);
-        if (((RkExtensionData*)mRkExtenData)->chip_type == NONE) {
-            ALOGE("current borad chip type unknow, error");
-            return;
-        }
+    if (input->mIsExternalBuffer) {
+        queueExternalBuffer(STC.get(), input->mBuffer,
+            input->mWidth, input->mHeight);
+    } else {
+        queueInternalBuffer(STC.get(), input->mBuffer);
     }
-    ANativeWindowBuffer *buf = NULL;
-    int err;
-
-	CHECK(NO_ERROR == native_window_dequeue_buffer_and_wait(STC.get(), &buf));
-    CHECK(buf != NULL);
-
-    GraphicBufferMapper &mapper = GraphicBufferMapper::get();
-    Rect bounds(bufWidth, bufHeight);
-    void *dst;
-    CHECK_EQ(0, mapper.lock(
-                buf->handle, GRALLOC_USAGE_SW_WRITE_OFTEN, bounds, &dst));
-    if (input->mIsExternalBuffer == false) {
-        int32_t rga_fd = ((RkExtensionData*)mRkExtenData)->rga_fd;
-        int32_t ipp_fd = ((RkExtensionData*)mRkExtenData)->ipp_fd;
-        VPU_FRAME *frame = (VPU_FRAME *)(input->mBuffer->data());
-        VPUMemLink(&frame->vpumem);
-
-        if(!frame->vpumem.phy_addr){
-            return;
-        }
-
-        uint8_t* pYuvVirAddr = (uint8_t*)(frame->vpumem.vir_addr);
-        if (rga_fd == -1) {
-            ALOGE("no rga dev!");
-            return;
-        } else if (rga_fd >0) {
-			struct rga_req  Rga_Request;
-	        memset(&Rga_Request,0x0,sizeof(Rga_Request));
-	        Rga_Request.src.yrgb_addr =  (int)frame->FrameBusAddr[0]+ 0x60000000;
-	        Rga_Request.src.uv_addr  = Rga_Request.src.yrgb_addr +
-                ((bufWidth + 15)&(~15)) * ((bufHeight+ 15)&(~15));
-	        Rga_Request.src.v_addr   =  Rga_Request.src.uv_addr;
-	        Rga_Request.src.vir_w = (bufWidth + 15)&(~15);
-	        Rga_Request.src.vir_h = (bufHeight + 15)&(~15);
-	        Rga_Request.src.format = RK_FORMAT_YCbCr_420_SP;
-	      	Rga_Request.src.act_w = bufWidth;
-	        Rga_Request.src.act_h = bufHeight;
-	        Rga_Request.src.x_offset = 0;
-	        Rga_Request.src.y_offset = 0;
-	        Rga_Request.dst.yrgb_addr = (uint32_t)dst;
-	        Rga_Request.dst.uv_addr  = 0;
-	        Rga_Request.dst.v_addr   = 0;
-	       	Rga_Request.dst.vir_w = (bufWidth+ 31)&(~31);
-	        Rga_Request.dst.vir_h = (bufHeight + 15)&(~15);
-	        Rga_Request.dst.format = RK_FORMAT_RGB_565;
-	        Rga_Request.clip.xmin = 0;
-	        Rga_Request.clip.xmax = ((bufWidth+ 31)&(~31)) - 1;
-	        Rga_Request.clip.ymin = 0;
-	        Rga_Request.clip.ymax = ((bufHeight + 15)&(~15)) - 1;
-	    	Rga_Request.dst.act_w = bufWidth;
-	    	Rga_Request.dst.act_h = bufHeight;
-	    	Rga_Request.dst.x_offset = 0;
-	    	Rga_Request.dst.y_offset = 0;
-	    	Rga_Request.rotate_mode = 0;
-	       	Rga_Request.mmu_info.mmu_en    = 1;
-	       	Rga_Request.mmu_info.mmu_flag  = ((2 & 0x3) << 4) | 1;
-	    	if(ioctl(rga_fd, RGA_BLIT_SYNC, &Rga_Request) != 0)
-	    	{
-	            ALOGE("rga RGA_BLIT_SYNC fail");
-	    	}
-        }
-        VPUFreeLinear(&frame->vpumem);
-    }else {
-        uint8_t* pSrc = (uint8_t*)(input->mBuffer->data()) + input->mBuffer->range_offset();
-        yuv420torgb565(pSrc, pSrc + (bufWidth * bufHeight), pSrc + (bufWidth * bufHeight * 5 /4),
-            (int16_t*)dst, bufWidth, bufHeight);
-    }
-    CHECK_EQ(0, mapper.unlock(buf->handle));
-    if ((err = input->getTargetWindow()->queueBuffer(STC.get(), buf, -1)) != 0) {
-        ALOGE("render, queueBuffer returned error %d", err);
-    }
-
-    buf = NULL;
 
     ST->updateTexImage();
     glClearColor(0, 0, 0, 0);
@@ -787,72 +582,8 @@ ANativeWindow* RenderInput::getTargetWindow() {
 }
 
 void RenderInput::updateVideoSize(sp<MetaData> meta) {
-    int32_t rga_fd = ((RkExtensionData*)(mRenderer->mRkExtenData))->rga_fd;
-    int32_t ipp_fd = ((RkExtensionData*)(mRenderer->mRkExtenData))->ipp_fd;
-    const char *decComponent;
-    bool bIsJpg = false;
-    if((meta->findCString(kKeyDecoderComponent, &decComponent)) &&
-            decComponent &&
-            strstr(decComponent, "DummyVideoSource")) {
-        bIsJpg = true;
-    }
     CHECK(meta->findInt32(kKeyWidth, &mWidth));
     CHECK(meta->findInt32(kKeyHeight, &mHeight));
-    CHECK_EQ(0,
-            native_window_set_usage(
-            mSTC.get(),
-            GRALLOC_USAGE_SW_READ_NEVER | GRALLOC_USAGE_SW_WRITE_OFTEN
-            | GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_EXTERNAL_DISP));
-    CHECK_EQ(0,
-            native_window_set_scaling_mode(
-            mSTC.get(),
-            NATIVE_WINDOW_SCALING_MODE_SCALE_TO_WINDOW));
-    CHECK_EQ(0, native_window_set_buffer_count(mSTC.get(), 3));
-    if (bIsJpg == false) {
-        if (rga_fd >0) {
-            CHECK_EQ(0, native_window_set_buffers_geometry(
-                        mSTC.get(),
-                        (mWidth+31) & (~31),
-                        (mHeight+15) & (~15),
-                        HAL_PIXEL_FORMAT_RGB_565));
-        } else {
-            if (ipp_fd >0) {
-                CHECK_EQ(0, native_window_set_buffers_geometry(
-                    mSTC.get(),
-                    (mWidth+15) & (~15),
-                    (mHeight+15) & (~15),
-                    HAL_PIXEL_FORMAT_YCrCb_NV12));
-            } else {
-                CHECK_EQ(0, native_window_set_buffers_geometry(
-                    mSTC.get(),
-                    (mWidth+15) & (~15),
-                    (mHeight+15) & (~15),
-                    HAL_PIXEL_FORMAT_RGB_565));
-            }
-        }
-    }else {
-        if (((RkExtensionData*)(mRenderer->mRkExtenData))->chip_type == RK30) {
-            CHECK_EQ(0, native_window_set_buffers_geometry(
-                mSTC.get(),
-            	(mWidth+31) & (~31),
-                (mHeight+15) & (~15),
-                HAL_PIXEL_FORMAT_RGB_565));
-        } else {
-            CHECK_EQ(0, native_window_set_buffers_geometry(
-                mSTC.get(),
-            	(mWidth+15) & (~15),
-                (mHeight+15) & (~15),
-                HAL_PIXEL_FORMAT_RGB_565));
-        }
-    }
-
-	android_native_rect_t crop;
-    crop.left = 0;
-    crop.top = 0;
-    crop.right = mWidth & (~3); //if no 4 aglin crop csy
-    crop.bottom = mHeight;
-
-    CHECK_EQ(0, native_window_set_crop(mSTC.get(), &crop));
 
     int left, top, right, bottom;
     if (meta->findRect(kKeyCropRect, &left, &top, &right, &bottom)) {
@@ -867,24 +598,10 @@ void RenderInput::updateVideoSize(sp<MetaData> meta) {
         rotationDegrees = 0;
     }
 
-#if 0
     if (rotationDegrees == 90 || rotationDegrees == 270) {
         int tmp = mWidth;
         mWidth = mHeight;
         mHeight = tmp;
-    }
-#endif
-    uint32_t transform;
-    switch (rotationDegrees) {
-        case 0: transform = 0; break;
-        case 90: transform = HAL_TRANSFORM_ROT_90; break;
-        case 180: transform = HAL_TRANSFORM_ROT_180; break;
-        case 270: transform = HAL_TRANSFORM_ROT_270; break;
-        default: transform = 0; break;
-    }
-    if (transform) {
-        CHECK_EQ(0, native_window_set_buffers_transform(
-                    mSTC.get(), transform));
     }
 }
 

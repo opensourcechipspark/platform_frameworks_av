@@ -39,7 +39,7 @@
 #include <OMX_Video.h>
 
 namespace android {
-
+extern FILE* omx_txt;
 Converter::Converter(
         const sp<AMessage> &notify,
         const sp<ALooper> &codecLooper,
@@ -172,7 +172,7 @@ status_t Converter::initEncoder() {
     if (!mIsPCMAudio) {
         mEncoder = MediaCodec::CreateByType(
                 mCodecLooper, outputMIME.c_str(), true /* encoder */);
-
+        ALOGD("outputMIME.c_str() %s",outputMIME.c_str());
         if (mEncoder == NULL) {
             return ERROR_UNSUPPORTED;
         }
@@ -183,7 +183,7 @@ status_t Converter::initEncoder() {
     }
 
     int32_t audioBitrate = GetInt32Property("media.wfd.audio-bitrate", 128000);
-    int32_t videoBitrate = GetInt32Property("media.wfd.video-bitrate", 5000000);
+    int32_t videoBitrate = GetInt32Property("media.wfd.video-bitrate", 2* 1024 * 1024);
     mPrevVideoBitrate = videoBitrate;
 
     ALOGI("using audio bitrate of %d bps, video bitrate of %d bps",
@@ -194,11 +194,15 @@ status_t Converter::initEncoder() {
     } else {
         mOutputFormat->setInt32("bitrate", videoBitrate);
         mOutputFormat->setInt32("bitrate-mode", OMX_Video_ControlRateConstant);
-        mOutputFormat->setInt32("frame-rate", 30);
-        mOutputFormat->setInt32("i-frame-interval", 15);  // Iframes every 15 secs
+        mOutputFormat->setInt32("frame-rate", 25);
+        mOutputFormat->setInt32("i-frame-interval", 1);  // Iframes every 15 secs
+        mOutputFormat->setInt32("profile", OMX_VIDEO_AVCProfileBaseline);
+        mOutputFormat->setInt32("level",OMX_VIDEO_AVCLevel4);
+		
+      //  mOutputFormat->setInt32("i-frame-interval", 1);  // Iframes every 1 secs
 
         // Configure encoder to use intra macroblock refresh mode
-        mOutputFormat->setInt32("intra-refresh-mode", OMX_VIDEO_IntraRefreshCyclic);
+        //mOutputFormat->setInt32("intra-refresh-mode", OMX_VIDEO_IntraRefreshCyclic);
 
         int width, height, mbs;
         if (!mOutputFormat->findInt32("width", &width)
@@ -232,6 +236,7 @@ status_t Converter::initEncoder() {
                 MediaCodec::CONFIGURE_FLAG_ENCODE);
 
         if (err == OK) {
+            mNeedToManuallyPrependSPSPPS = true;
             // Encoder supported prepending SPS/PPS, we don't need to emulate
             // it.
             mOutputFormat = tmp;
@@ -388,11 +393,31 @@ void Converter::onMessageReceived(const sp<AMessage> &msg) {
                     }
                 }
 #endif
-
+                {
+                  int retrtptxt;
+                  int64_t timeUs;
+                  int64_t sys_time= systemTime(SYSTEM_TIME_MONOTONIC) / 1000;  
+                  CHECK(accessUnit->meta()->findInt64("timeUs", &timeUs));
+                  if((retrtptxt = access("data/test/omx_txt_file",0)) == 0)//test_file!=NULL)
+                  {	
+                		if(omx_txt == NULL)
+                			omx_txt = fopen("data/test/omx_txt.txt","ab");
+                		else
+                		{
+                		  if(mIsH264)
+                			fprintf(omx_txt,"doMoreWork pull Video  time sys %lld %lld delta %lld mInputBufferQueue size %d\n",
+                			 	sys_time ,timeUs,sys_time - timeUs,mInputBufferQueue.size());
+	                        	else
+	                          		fprintf(omx_txt,"doMoreWork pull Audio  time sys %lld %lld delta %lld mInputBufferQueue size %d\n",
+                			 	sys_time ,timeUs,sys_time - timeUs,mInputBufferQueue.size());
+                        fflush(omx_txt);
+                		}
+                	}
+                }
                 mInputBufferQueue.push_back(accessUnit);
 
                 feedEncoderInputBuffers();
-
+                
                 scheduleDoMoreWork();
             }
             break;
@@ -652,17 +677,37 @@ status_t Converter::feedEncoderInputBuffers() {
                     && mediaBuffer != NULL) {
                 mEncoderInputBuffers.itemAt(bufferIndex)->meta()
                     ->setPointer("mediaBuffer", mediaBuffer);
-
+				if(mIsVideo)
+					ALOGV("Converter feedEncoderInputBuffers mediaBuffer %x timeUs %lld",mediaBuffer,timeUs);
                 buffer->meta()->setPointer("mediaBuffer", NULL);
             }
         } else {
             flags = MediaCodec::BUFFER_FLAG_EOS;
         }
-
+       
         status_t err = mEncoder->queueInputBuffer(
                 bufferIndex, 0, (buffer == NULL) ? 0 : buffer->size(),
                 timeUs, flags);
-
+        if(1)
+        {
+              int retrtptxt;
+              int64_t sys_time= systemTime(SYSTEM_TIME_MONOTONIC) / 1000;  
+              if((retrtptxt = access("data/test/omx_txt_file",0)) == 0)//test_file!=NULL)
+              {	
+            		if(omx_txt == NULL)
+            			omx_txt = fopen("data/test/omx_txt.txt","ab");
+            		else
+            		{
+            		  if(mIsH264)
+            			fprintf(omx_txt,"doMoreWork queue in Video  time sys %lld %lld delta %lld mInputBufferQueue size %d\n",
+            			 	sys_time ,timeUs,sys_time - timeUs,flags,mInputBufferQueue.size());
+                    else
+                      fprintf(omx_txt,"doMoreWork queue in Audio  time sys %lld %lld delta %lld flags %d %d\n",
+            			 	sys_time ,timeUs,sys_time - timeUs,flags);
+                    fflush(omx_txt);
+            		}
+            	}
+            }
         if (err != OK) {
             return err;
         }
@@ -757,7 +802,7 @@ status_t Converter::doMoreWork() {
                 sp<AMessage> notify(new AMessage(
                         kWhatReleaseOutputBuffer, id()));
                 notify->setInt32("bufferIndex", bufferIndex);
-
+                
                 buffer = new ABuffer(
                         rangeLength > (int32_t)size ? rangeLength : size);
                 buffer->meta()->setPointer("handle", handle);
@@ -774,7 +819,6 @@ status_t Converter::doMoreWork() {
                   mIsVideo ? "video" : "audio", timeUs, timeUs / 1E6);
 
             memcpy(buffer->data(), outbuf->base() + offset, size);
-
             if (flags & MediaCodec::BUFFER_FLAG_CODECCONFIG) {
                 if (!handle) {
                     if (mIsH264) {
@@ -789,16 +833,44 @@ status_t Converter::doMoreWork() {
                         && IsIDR(buffer)) {
                     buffer = prependCSD(buffer);
                 }
-
+                
                 sp<AMessage> notify = mNotify->dup();
                 notify->setInt32("what", kWhatAccessUnit);
                 notify->setBuffer("accessUnit", buffer);
                 notify->post();
             }
+            if(1)
+            {
+              int retrtptxt;
+              int64_t sys_time= systemTime(SYSTEM_TIME_MONOTONIC) / 1000;  
+              if((retrtptxt = access("data/test/omx_txt_file",0)) == 0)//test_file!=NULL)
+              {	
+            		if(omx_txt == NULL)
+            			omx_txt = fopen("data/test/omx_txt.txt","ab");
+            		else
+            		{
+            		  if(mIsH264)
+            			fprintf(omx_txt,"doMoreWork dequque out Video  time sys %lld %lld delta %lld flags %d %d mNeedToManuallyPrependSPSPPS %d mFlags %d\n",
+            			 	sys_time ,timeUs,sys_time - timeUs,flags,(outbuf->meta()->findPointer("handle", (void**)&handle) &&
+                    handle != NULL),mNeedToManuallyPrependSPSPPS, mFlags);
+                  else
+                    fprintf(omx_txt,"doMoreWork dequque out Audio  time sys %lld %lld delta %lld flags %d %d\n",
+            			 	sys_time ,timeUs,sys_time - timeUs,flags,(outbuf->meta()->findPointer("handle", (void**)&handle) &&
+                    handle != NULL));
+            			fflush(omx_txt);
+            		}
+            	}
+            if(mIsH264)
+            			ALOGV("doMoreWork dequque Video  time sys %lld %lld delta %lld flags %d %d mNeedToManuallyPrependSPSPPS %d mFlags %d\n",
+            			 	sys_time ,timeUs,sys_time - timeUs,flags,(outbuf->meta()->findPointer("handle", (void**)&handle) &&
+                    handle != NULL),mNeedToManuallyPrependSPSPPS, mFlags);
+            }
+
+ 
         }
 
         if (!handle) {
-            mEncoder->releaseOutputBuffer(bufferIndex);
+            mEncoder->releaseOutputBuffer(bufferIndex);//handle !=NULL released by kWhatReleaseOutputBuffer jmj stroemetadatabuffer
         }
 
         if (flags & MediaCodec::BUFFER_FLAG_EOS) {

@@ -50,12 +50,13 @@ private:
     int32_t mCropLeft, mCropTop, mCropRight, mCropBottom;
     int32_t mCropWidth, mCropHeight;
 	Vector<VPU_FRAME*> mStructId;
-
+    int32_t mHintTransform;
     bool init_Flag;
     int32_t rga_fd;
     int32_t power_fd;
 	int32_t mHttpFlag;
     int32_t mSwdecFlag;
+    int32_t mFlags;
     SoftwareRenderer(const SoftwareRenderer &);
     SoftwareRenderer &operator=(const SoftwareRenderer &);
 };

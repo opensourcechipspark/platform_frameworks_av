@@ -29,6 +29,8 @@
 #include <media/stagefright/MediaBuffer.h>
 
 
+#undef LOG_TAG
+#define LOG_TAG "FLACDecoder"
 
 #define FLAC_DEC_DEBUG 0
 
@@ -40,6 +42,8 @@
 
 
 #define OUTPUT_BUFFER_SIZE_FLAC (1024*16)
+
+static const int8_t sample_size_table[] = { 0, 8, 12, 0, 16, 20, 24, 0 };
 
 namespace android {
 
@@ -574,8 +578,8 @@ status_t RK_FLACParser::init()
 
     /*
      ** we do not need to parse metadata here. so set mStreamInfoValid to true.
-     */
-     mStreamInfoValid = true;
+    */
+    mStreamInfoValid = true;
 #if 0
     // parse all metadata
     if (!FLAC__stream_decoder_process_until_end_of_metadata(mDecoder)) {
@@ -770,9 +774,6 @@ FLACDecoder::FLACDecoder(const sp<MediaSource> &source)
       mReAsynThreshHold(0LL),
       mRkFlacParser(NULL) {
     init();
-
-    mRkFlacParser = new RK_FLACParser(this);
-    CHECK(mRkFlacParser != NULL);
 }
 
 void FLACDecoder::init() {
@@ -813,6 +814,23 @@ status_t FLACDecoder::start(MetaData *params) {
     mNumFramesOutput = 0;
     mStarted = true;
 
+    /*
+     ** check bit depths for we do not support 32 bit depths now.
+    */
+    if (mBitDepth >=32) {
+        status_t err = mSource->read(&mInputBuffer, NULL);
+        if (err == OK) {
+            uint8_t *pBuf = (uint8_t*)(mInputBuffer->data());
+            pBuf +=mInputBuffer->range_offset();
+            checkFlacFrameHeader(pBuf, mInputBuffer->range_length());
+        }
+    }
+
+    if (mRkFlacParser == NULL) {
+        mRkFlacParser = new RK_FLACParser(this);
+        CHECK(mRkFlacParser != NULL);
+    }
+
     return OK;
 }
 
@@ -835,6 +853,54 @@ sp<MetaData> FLACDecoder::getFormat() {
     return mMeta;
 }
 
+int32_t FLACDecoder::checkFlacFrameHeader(uint8_t* buf, uint32_t size)
+{
+    if ((buf == NULL) || (size ==0)) {
+        return -1;
+    }
+
+    uint8_t *pBuf = buf;
+    uint32_t tmp = 0;
+    uint32_t bs_code, sr_code, ch_mode, bps_code, bps;
+    uint32_t sync_code = (*pBuf++);
+
+    sync_code = ((sync_code <<8) | (*pBuf++));
+
+    FLAC_LOG("sync_code: 0x%X, ((sync_code >>1) & 0x7FFF): 0x%X",
+            sync_code, ((sync_code >>1) & 0x7FFF));
+
+    if (((sync_code >>1) & 0x7FFF) != 0x7FFC) {
+        FLAC_LOG("invalid flac sync code");
+        return -1;
+    }
+
+    /* variable block size stream code */
+    int32_t is_var_size = (sync_code & 1);
+
+    /* block size and sample rate codes */
+    tmp = (*pBuf++);
+    bs_code = ((tmp >>4) & 0xF);
+    sr_code = ((tmp) & 0xF);
+
+    /* channels and decorrelation */
+    tmp = (*pBuf++);
+    ch_mode = ((tmp >>4) & 0xF);
+
+    FLAC_LOG("is_var_size: %d, bs_code: %d, sr_code: %d, ch_mode: %d",
+            is_var_size, bs_code, sr_code, ch_mode);
+
+    /* bits per sample */
+    bps_code = ((tmp & 0xE) >>1);
+    if (bps_code == 3 || bps_code == 7) {
+        FLAC_LOG("invalid sample size code (%d)",bps_code);
+        return -1;
+    }
+
+    bps = sample_size_table[bps_code];
+    mBitDepth = bps;
+    return 0;
+}
+
 status_t FLACDecoder::read(
         MediaBuffer **out, const ReadOptions *options) {
     status_t err;
@@ -855,6 +921,11 @@ status_t FLACDecoder::read(
 		//by Charles Chen at Feb,11th ,2011
         mNumFramesOutput = 0;
 
+        /* if we have read one packet while do frame header check, release it at first before do seek */
+        if (mInputBuffer) {
+            mInputBuffer->release();
+            mInputBuffer = NULL;
+        }
         /* call extractor to do seek first */
         err = mSource->read(&mInputBuffer, options);
 		mAnchorTimeUs = -1LL;//-1 mean after seek ,need Assignment first frame time after seek
@@ -888,9 +959,7 @@ status_t FLACDecoder::read(
     }
 
     *out = buffer;
-
     return buffer != NULL ? (status_t) OK : (status_t) ERROR_END_OF_STREAM;
-
 }
 
 }  // namespace android

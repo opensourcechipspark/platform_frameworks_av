@@ -159,7 +159,8 @@ enum {
     kKeyRequiresSecureBuffers = 'secu',  // bool (int32_t)
 
     kKeyIsADTS            = 'adts',  // bool (int32_t)
-    kKeyIsLATM			= 'latm',  //bool(int32_t)
+    kKeyAACAOT            = 'aaot',  // int32_t
+	kKeyIsLATM			= 'latm',  //bool(int32_t)
 	kKeyAudioType = 'audt', // cstring
 
 	kKeyisTs      = 'tsmx',
@@ -190,6 +191,9 @@ enum {
 
     kKeyPssh              = 'pssh',  // raw data
     kKeyWavExtInfo		= 'wavI',  //raw data
+    kKeyRkHevc          = 'rkhevc', //int32_t =
+    kKeyExtraData       = 'extr',
+	kKeyIsMbaff         = 'mbaf',   // int32_t
 };
 
 enum {

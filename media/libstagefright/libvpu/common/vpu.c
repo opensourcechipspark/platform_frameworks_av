@@ -73,12 +73,14 @@
 #define VPU_IOC_GET_HW_FUSE_STATUS          _IOW(VPU_IOC_MAGIC, 2, unsigned long)
 #define VPU_IOC_SET_REG                     _IOW(VPU_IOC_MAGIC, 3, unsigned long)
 #define VPU_IOC_GET_REG                     _IOW(VPU_IOC_MAGIC, 4, unsigned long)
+#define VPU_IOC_PROBE_IOMMU_STATUS          _IOR(VPU_IOC_MAGIC, 5, unsigned long)
 typedef struct VPUReq
 {
     RK_U32 *req;
     RK_U32  size;
 } VPUReq_t;
 static int vpu_service_status = -1;
+static int vpu_service_iommu_status = -1;
 #define VPU_SERVICE_TEST    \
     do { \
         if (vpu_service_status < 0) { \
@@ -90,7 +92,13 @@ int VPUClientInit(VPU_CLIENT_TYPE type)
     VPU_SERVICE_TEST;
     if (vpu_service_status) {
         int ret;
-        int fd = open("/dev/vpu_service", O_RDWR);
+        int fd;
+        if (type != VPU_DEC_HEVC) {
+            fd = open("/dev/vpu_service", O_RDWR);
+        } else {
+            fd = open("/dev/hevc_service", O_RDWR);
+            type = VPU_DEC;
+        }
         if (fd == -1) {
             ALOGE("VPUClient: failed to open vpu_service\n");
             return -1;
@@ -302,6 +310,26 @@ RK_S32 VPUClientGetHwCfg(int socket, RK_U32 *cfg, RK_U32 cfg_size)
     }
 }
 
+RK_S32 VPUClientGetIOMMUStatus()
+{
+    int ret = 0;
+    if(vpu_service_iommu_status < 0){
+        int fd = -1;
+        fd = open("/dev/vpu_service", O_RDWR);
+        if(fd >= 0){
+            ret = (RK_S32)ioctl(fd, VPU_IOC_PROBE_IOMMU_STATUS, (RK_U32)&vpu_service_iommu_status);
+            if (ret) {
+                vpu_service_iommu_status = 0;
+                ALOGE("VPUClient: ioctl VPU_IOC_PROBE_IOMMU_STATUS failed ret %d, disable iommu\n", ret);
+            }
+            close(fd);
+        }else{
+            vpu_service_iommu_status = 0;
+       }
+    }
+    ALOGV("vpu_service_iommu_status %d",vpu_service_iommu_status);
+    return vpu_service_iommu_status;
+}
 #if BUILD_VPU_TEST
 #include <pthread.h>
 #define MAX_THREAD_NUM      10

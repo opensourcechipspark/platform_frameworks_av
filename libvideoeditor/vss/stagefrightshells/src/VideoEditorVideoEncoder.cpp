@@ -1106,7 +1106,7 @@ M4OSA_ERR VideoEditorVideoEncoder_stop(M4ENCODER_Context pContext) {
     VIDEOEDITOR_CHECK(M4NO_ERROR == err, err);
 
     // Process the remaining buffers if necessary
-    if ( (BUFFERING | READING) & pEncoderContext->mState ) {
+    if ( (BUFFERING | READING | STARTED) & pEncoderContext->mState ) {
         while (1)  {
             MediaBuffer *outputBuffer =
                 pEncoderContext->mPuller->getBufferBlocking();

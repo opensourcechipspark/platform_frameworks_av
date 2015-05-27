@@ -14,8 +14,8 @@ public:
 
     RK_S32      init(RK_U32 framenum);
     RK_S32      deinit();
-    VPU_FRAME*  get_frame(RK_U32 size);
-    RK_S32      malloc_frame(VPU_FRAME *frame, RK_U32 size);
+    VPU_FRAME*  get_frame(RK_U32 size,void *ctx);
+    RK_S32      malloc_frame(VPU_FRAME *frame, RK_U32 size,void *ctx);
     RK_S32      free_frame(VPU_FRAME *frame);
 	void		push_empty(VPU_FRAME *frame);
 	void		push_display(VPU_FRAME *frame);

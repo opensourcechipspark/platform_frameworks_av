@@ -299,7 +299,7 @@ sp<MetaData> SurfaceMediaSource::getFormat()
 // Note: Call only when you have the lock
 static void passMetadataBuffer(MediaBuffer **buffer,
         buffer_handle_t bufferHandle) {
-    *buffer = new MediaBuffer(4 + sizeof(buffer_handle_t));
+    *buffer = new MediaBuffer(20 + sizeof(buffer_handle_t));
     char *data = (char *)(*buffer)->data();
     if (data == NULL) {
         ALOGE("Cannot allocate memory for metadata buffer!");
@@ -307,7 +307,7 @@ static void passMetadataBuffer(MediaBuffer **buffer,
     }
     OMX_U32 type = kMetadataBufferTypeGrallocSource;
     memcpy(data, &type, 4);
-    memcpy(data + 4, &bufferHandle, sizeof(buffer_handle_t));
+    memcpy(data + 16, &bufferHandle, sizeof(buffer_handle_t));
 
     ALOGV("handle = %p, , offset = %d, length = %d",
             bufferHandle, (*buffer)->range_length(), (*buffer)->range_offset());
@@ -320,12 +320,12 @@ status_t SurfaceMediaSource::read( MediaBuffer **buffer,
     Mutex::Autolock lock(mMutex);
 
     *buffer = NULL;
+	int64_t systime = systemTime(SYSTEM_TIME_MONOTONIC) / 1000;
 
     while (mStarted && mNumPendingBuffers == mMaxAcquiredBufferCount) {
         mMediaBuffersAvailableCondition.wait(mMutex);
     }
 
-	int64_t systime = systemTime(SYSTEM_TIME_MONOTONIC) / 1000;
 	int64_t systime3;
     // Update the current buffer info
     // TODO: mCurrentSlot can be made a bufferstate since there
@@ -394,15 +394,8 @@ status_t SurfaceMediaSource::read( MediaBuffer **buffer,
 					  omx_txt = fopen("data/test/omx_txt.txt","ab");
 				  if(omx_txt != NULL)
 				  {
-					fprintf(omx_txt,"SurfaceMediaSource::read Video sys_time %lld mStartTimeNs %lld %lld timeUs %lld %lld delta %lld %lld  %lld buffer_handle %x video_source_num %d %d %d mNumFramesReceived %d setMaxAcquiredBufferCount %d mNumPendingBuffers %d %x\n",
-						sys_time,start_time_us ,mStartTimeNs,item.mTimestamp/1000,( mStartTimeNs + (item.mTimestamp - mFirstFrameTimestamp))/1000 ,
-						(( mStartTimeNs + (item.mTimestamp - mFirstFrameTimestamp)) - last_time_us)/1000
-						,sys_time - start_time_us -(mStartTimeNs + (item.mTimestamp - mFirstFrameTimestamp)) / 1000,
-						sys_time - last_sys_time,mSlots[item.mBuf].mGraphicBuffer ->handle,last_video_source_num,video_source_num,
-						video_source_num-last_video_source_num,
-						mNumFramesReceived,mMaxAcquiredBufferCount,mNumPendingBuffers,*buffer);
-					ALOGV("SurfaceMediaSource::read Video sys_time %lld mStartTimeNs %lld %lld timeUs %lld delta %lld %lld  %lld buffer_handle %x video_source_num %d %d %d mNumFramesReceived %d setMaxAcquiredBufferCount %d mNumPendingBuffers %d %x\n",
-						sys_time,start_time_us ,mStartTimeNs,( mStartTimeNs + (item.mTimestamp - mFirstFrameTimestamp))/1000 ,
+					fprintf(omx_txt,"SurfaceMediaSource::read Video sys_time %lld %lld %lld mStartTimeNs %lld %lld timeUs %lld %lld delta %lld %lld  %lld buffer_handle %x video_source_num %lld %lld %lld mNumFramesReceived %d setMaxAcquiredBufferCount %d mNumPendingBuffers %d %x\n",
+						sys_time,systime3,systime3-systime3,start_time_us ,mStartTimeNs,item.mTimestamp/1000,( mStartTimeNs + (item.mTimestamp - mFirstFrameTimestamp))/1000 ,
 						(( mStartTimeNs + (item.mTimestamp - mFirstFrameTimestamp)) - last_time_us)/1000
 						,sys_time - start_time_us -(mStartTimeNs + (item.mTimestamp - mFirstFrameTimestamp)) / 1000,
 						sys_time - last_sys_time,mSlots[item.mBuf].mGraphicBuffer ->handle,last_video_source_num,video_source_num,
@@ -473,7 +466,7 @@ static buffer_handle_t getMediaBufferHandle(MediaBuffer *buffer) {
     // need to convert to char* for pointer arithmetic and then
     // copy the byte stream into our handle
     buffer_handle_t bufferHandle;
-    memcpy(&bufferHandle, (char*)(buffer->data()) + 4, sizeof(buffer_handle_t));
+    memcpy(&bufferHandle, (char*)(buffer->data()) + 16, sizeof(buffer_handle_t));
     return bufferHandle;
 }
 
@@ -513,13 +506,7 @@ void SurfaceMediaSource::signalBufferReturned(MediaBuffer *buffer) {
 			  omx_txt = fopen("data/test/omx_txt.txt","ab");
 		  if(omx_txt != NULL)
 		  {
-			fprintf(omx_txt,"SurfaceMediaSource::signalBufferReturned   Video sys_time %lld mStartTimeNs %lld %lld timeUs %lld delta %lld %lld  %lld buffer_handle %x mNumFramesReceived %d\n",
-				sys_time,start_time_us ,mStartTimeNs,timeUs ,
-				(timeUs - last_time_us)
-				,sys_time - start_time_us -timeUs,
-				sys_time - last_sys_time,bufferHandle, 
-				mNumFramesReceived);
-			ALOGV("BufferQueue signalBufferReturned SurfaceMediaSource::read Video sys_time %lld mStartTimeNs %lld %lld timeUs %lld delta %lld %lld  %lld buffer_handle %x mNumPendingBuffers %d mNumFramesReceived %d\n",
+			fprintf(omx_txt,"SurfaceMediaSource::signalBufferReturned   Video sys_time %lld mStartTimeNs %lld %lld timeUs %lld delta %lld %lld  %lld buffer_handle %x mNumPendingBuffers %d mNumFramesReceived %d\n",
 				sys_time,start_time_us ,mStartTimeNs,timeUs ,
 				(timeUs - last_time_us)
 				,sys_time - start_time_us -timeUs,
@@ -591,6 +578,18 @@ void SurfaceMediaSource::onFrameAvailable() {
         ALOGV("actually calling onFrameAvailable");
         listener->onFrameAvailable();
     }
+		{
+		int retrtptxt;
+	  if((retrtptxt = access("data/test/omx_txt_file",0)) == 0)//test_file!=NULL)
+	  {
+		  if(omx_txt == NULL)
+			  omx_txt = fopen("data/test/omx_txt.txt","ab");
+		  if(omx_txt != NULL)
+		  {
+			fprintf(omx_txt,"SurfaceMediaSource::onframeavailable\n");
+			fflush(omx_txt);
+		  }
+	  }	}
 }
 
 // SurfaceMediaSource hijacks this event to assume

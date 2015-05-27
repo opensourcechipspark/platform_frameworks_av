@@ -171,9 +171,14 @@ private:
 struct AwesomeNativeWindowRenderer : public AwesomeRenderer {
     AwesomeNativeWindowRenderer(
             const sp<ANativeWindow> &nativeWindow,
-            int32_t rotationDegrees)
-        : mNativeWindow(nativeWindow) {
+            int32_t rotationDegrees,int32_t width,int32_t height,int32_t is_hevc)
+        : mNativeWindow(nativeWindow),
+        power_fd(-1),
+        mWidth(width),
+        mHeight(height),
+        mIshevc(is_hevc){
         applyRotation(rotationDegrees);
+        openVideoPowerControl();
     }
 
     virtual void render(MediaBuffer *buffer) {
@@ -193,12 +198,46 @@ struct AwesomeNativeWindowRenderer : public AwesomeRenderer {
         metaData->setInt32(kKeyRendered, 1);
     }
 
+    void openVideoPowerControl(){
+        char prop_value[PROPERTY_VALUE_MAX];
+        if(property_get("sf.power.control", prop_value, NULL)&& atoi(prop_value) > 0){
+            power_fd = open("/dev/video_state", O_WRONLY);
+            if(power_fd == -1){
+                ALOGE("power control open fd fail");
+                return;
+            }
+            ALOGV("power control open fd suceess and write to 1");
+            char para[200]={0};
+			int paraLen = 0;
+			paraLen = sprintf(para, "1,width=%d,height=%d,ishevc=%d,videoFramerate=%d,streamBitrate=%d",mWidth,mHeight,mIshevc,0,0);
+            write(power_fd, para, paraLen);
+        }
+    }
+    void closeVideoPowerControl(){
+        char prop_value[PROPERTY_VALUE_MAX];
+        if(property_get("sf.power.control", prop_value, NULL) && atoi(prop_value) > 0){
+            char para[200]={0};
+            int paraLen = 0;
+    		paraLen = sprintf(para, "0,width=%d,height=%d,ishevc=%d,videoFramerate=%d,streamBitrate=%d",mWidth,mHeight,mIshevc,0,0);
+            if(power_fd > 0){
+                ALOGV("power control close fd and write to 0");
+                write(power_fd, para, paraLen);
+                close(power_fd);
+                power_fd = -1;
+            }
+        }
+    }
 protected:
-    virtual ~AwesomeNativeWindowRenderer() {}
+    virtual ~AwesomeNativeWindowRenderer() {
+        closeVideoPowerControl();
+    }
 
 private:
     sp<ANativeWindow> mNativeWindow;
-
+    int32_t power_fd;
+    int32_t mWidth;
+    int32_t mHeight;
+    int32_t mIshevc;
     void applyRotation(int32_t rotationDegrees) {
         uint32_t transform;
         switch (rotationDegrees) {
@@ -517,7 +556,7 @@ status_t AwesomePlayer::setDataSource_l(const sp<MediaExtractor> &extractor) {
                     continue;
                 }
             }
-
+           // continue;
             /*
              ** if audio codec is disabled, do not open video stream.
             */
@@ -1011,7 +1050,7 @@ status_t AwesomePlayer::play() {
     ATRACE_CALL();
     if (mCachedSource != NULL)
         mCachedSource->set_palystate(NuCachedSource2::LOCKRELEASE,NuCachedSource2::SET);
- 
+
     Mutex::Autolock autoLock(mLock);
     if (mCachedSource != NULL)
         mCachedSource->set_palystate(NuCachedSource2::LOCKRELEASE,NuCachedSource2::CLEAR);
@@ -1309,11 +1348,17 @@ void AwesomePlayer::initRenderer_l() {
 
     int32_t format;
     const char *component;
+    int32_t ishevc;
     int32_t decodedWidth, decodedHeight;
     CHECK(meta->findInt32(kKeyColorFormat, &format));
     CHECK(meta->findCString(kKeyDecoderComponent, &component));
     CHECK(meta->findInt32(kKeyWidth, &decodedWidth));
     CHECK(meta->findInt32(kKeyHeight, &decodedHeight));
+   if(!strcmp(component,"OMX.rk.video_decoder.hevc")){
+        ishevc = 1;
+        ALOGV("is hevc decoder");
+    }
+#ifndef HWDEC
     if(isStreamingHTTP())
     {
         int32_t httpFlag = 1;
@@ -1332,6 +1377,8 @@ void AwesomePlayer::initRenderer_l() {
     if(pfrmanager &&pfrmanager->deintFlag){
         meta->setInt32(kKeyIsDeInterlace, 1);
     }
+#endif
+
     int32_t rotationDegrees;
     if (!mVideoTrack->getFormat()->findInt32(
                 kKeyRotation, &rotationDegrees)) {
@@ -1346,15 +1393,19 @@ void AwesomePlayer::initRenderer_l() {
 
     // Even if set scaling mode fails, we will continue anyway
     setVideoScalingMode_l(mVideoScalingMode);
+
+    if (strncmp(component, "OMX.", 4) && pfrmanager) {
+        pfrmanager->mPlayerExtCfg.use_iommu =0;
+    }
+
     if (USE_SURFACE_ALLOC
             && !strncmp(component, "OMX.", 4)
-            && strncmp(component, "OMX.google.", 11)
-			&& strncmp(component, "OMX.rk", 6)) {
+            && strncmp(component, "OMX.google.", 11)) {
         // Hardware decoders avoid the CPU color conversion by decoding
         // directly to ANativeBuffers, so we must use a renderer that
         // just pushes those buffers to the ANativeWindow.
         mVideoRenderer =
-            new AwesomeNativeWindowRenderer(mNativeWindow, rotationDegrees);
+            new AwesomeNativeWindowRenderer(mNativeWindow, rotationDegrees,decodedWidth,decodedHeight,ishevc);
     } else {
         // Other decoders are instantiated locally and as a consequence
         // allocate their buffers in local address space.  This renderer
@@ -1381,7 +1432,7 @@ status_t AwesomePlayer::pause() {
 
    if (mCachedSource != NULL)
         mCachedSource->set_palystate(NuCachedSource2::LOCKRELEASE,NuCachedSource2::SET);
-   
+
     Mutex::Autolock autoLock(mLock);
     if (mCachedSource != NULL)
         mCachedSource->set_palystate(NuCachedSource2::LOCKRELEASE,NuCachedSource2::CLEAR);
@@ -1426,7 +1477,6 @@ status_t AwesomePlayer::pause_l(bool at_eos) {
 
     modifyFlags(PLAYING, CLEAR);
     pfrmanager->pause();
-
     if (mDecryptHandle != NULL) {
         mDrmManagerClient->setPlaybackStatus(mDecryptHandle,
                 Playback::PAUSE, 0);
@@ -1494,7 +1544,7 @@ void AwesomePlayer::shutdownVideoDecoder_l() {
 
 status_t AwesomePlayer::setNativeWindow_l(const sp<ANativeWindow> &native) {
     mNativeWindow = native;
-
+    status_t err = 0;
     if (mVideoSource == NULL) {
         return OK;
     }
@@ -1506,17 +1556,19 @@ status_t AwesomePlayer::setNativeWindow_l(const sp<ANativeWindow> &native) {
     pause_l();
     mVideoRenderer.clear();
 
-   /* shutdownVideoDecoder_l();
-#ifdef HWDEC
-    status_t err = initVideoDecoder(OMXCodec::kHardwareCodecsOnly);
-#else
-    status_t err = initVideoDecoder(OMXCodec::kSoftwareCodecsOnly);
-#endif
+    shutdownVideoDecoder_l();
+
+    if(!pfrmanager->mPlayerExtCfg.use_iommu){
+       err = initVideoDecoder(OMXCodec::kSoftwareCodecsOnly);
+    }else{
+       err = initVideoDecoder(OMXCodec::kHardwareCodecsOnly);
+    }
     if (err != OK) {
-        LOGE("failed to reinstantiate video decoder after surface change.");
+        ALOGE("failed to reinstantiate video decoder after surface change.");
         return err;
-    }*/
-	 initRenderer_l();
+    }
+
+    initRenderer_l();
 
    /* if (mLastVideoTimeUs >= 0) {
         mSeeking = SEEK;
@@ -1600,7 +1652,7 @@ status_t AwesomePlayer::seekTo(int64_t timeUs) {
 			    mCachedSource->set_palystate(NuCachedSource2::LOCKRELEASE,NuCachedSource2::CLEAR);
 		    }
             pfrmanager->pause();
-				result = seekTo_l(timeUs);
+			result = seekTo_l(timeUs);
             pfrmanager->play();
 		}
 
@@ -1857,24 +1909,36 @@ status_t AwesomePlayer::initVideoDecoder(uint32_t flags) {
     ALOGV("initVideoDecoder flags=0x%x", flags);
 	if(!wireless_player_flag)
 	{
-    mVideoSource = OMXCodec::Create(
-            mClient.interface(), mVideoTrack->getFormat(),
-            false, // createEncoder
-            mVideoTrack,
-            NULL, flags, USE_SURFACE_ALLOC ? mNativeWindow : NULL);
+        const char *mime ;
+        (mVideoTrack->getFormat())->findCString(kKeyMIMEType, &mime);
+
+        if(pfrmanager->mPlayerExtCfg.use_iommu &&
+                ((!strcmp("video/x-vnd.on2.vp8",mime)) ||
+                (!strcmp("video/x-vnd.on2.vp9",mime)))){
+            flags = OMXCodec::kSoftwareCodecsOnly;
+            if (mDecryptHandle != NULL) {
+                flags |= OMXCodec::kEnableGrallocUsageProtected;
+            }
+            pfrmanager->mPlayerExtCfg.use_iommu = 0;
+        }
+        mVideoSource = OMXCodec::Create(
+                mClient.interface(), mVideoTrack->getFormat(),
+                false, // createEncoder
+                mVideoTrack,
+                NULL, flags, USE_SURFACE_ALLOC ? mNativeWindow : NULL);
 	}
 	else
 	{
 		const char *mime ;
 		(mVideoTrack->getFormat())->findCString(kKeyMIMEType, &mime);
 		ALOGE("AwesomePlayer::initVideoDecoder mime = %s",mime);
-	 if(!strcmp("video/mjpeg",mime))  //MIRRORING_MJPEG    //lsl
-    {
-        MediaSource* ptr = mVideoSource.get();
-    	RkOn2Decoder* mjpegdecoder = static_cast <RkOn2Decoder *>(ptr);
-		mjpegdecoder->SetParameterForWimo(mVideoTrack);
-	    ALOGE("AwesomePlayer::initVideoDecoder MJPEG");
-	}else if((!strcmp("video/avc",mime)))	//MIRRORING_AVC
+        if(!strcmp("video/mjpeg",mime))  //MIRRORING_MJPEG    //lsl
+        {
+            MediaSource* ptr = mVideoSource.get();
+            RkOn2Decoder* mjpegdecoder = static_cast <RkOn2Decoder *>(ptr);
+            mjpegdecoder->SetParameterForWimo(mVideoTrack);
+            ALOGE("AwesomePlayer::initVideoDecoder MJPEG");
+        }else if((!strcmp("video/avc",mime)))	//MIRRORING_AVC
 	    {
 	    	MediaSource* ptr = mVideoSource.get();
 	    	RkOn2Decoder* avcdecoder = static_cast <RkOn2Decoder *>(ptr);
@@ -1891,7 +1955,10 @@ status_t AwesomePlayer::initVideoDecoder(uint32_t flags) {
                 mDurationUs = durationUs;
             }
         }
-        pfrmanager->start((void*)this);    //display thread start only have video
+
+        if(!pfrmanager->mPlayerExtCfg.use_iommu){
+            pfrmanager->start((void*)this);    //display thread start only have video
+        }
         status_t err = mVideoSource->start();
 
         if (err != OK) {
@@ -1917,6 +1984,17 @@ status_t AwesomePlayer::initVideoDecoder(uint32_t flags) {
         if(format == OMX_COLOR_FormatYUV420Planar){
             ALOGI("set isSwDecFlag is ture");
             pfrmanager->isSwDecFlag = true;
+            pfrmanager->mPlayerExtCfg.setCacheFlag = true;
+        }
+        {
+            int32_t Width,Height;
+            mVideoSource->getFormat()->findInt32(kKeyWidth, &Width);
+            mVideoSource->getFormat()->findInt32(kKeyHeight, &Height);
+            if(Width > 2048 && Height > 1600){
+                 pfrmanager->mPlayerExtCfg.cacheNum = 2;
+            }else{
+                pfrmanager->mPlayerExtCfg.setCacheFlag = true;
+            }
         }
 
         static const char *kPrefix = "OMX.Nvidia.";
@@ -2003,15 +2081,20 @@ void AwesomePlayer::onVideoEvent() {
 
     if (mSeeking != NO_SEEK) {
         if (mVideoBuffer) {
-            mVideoBuffer->releaseframe();
+            if(!pfrmanager->mPlayerExtCfg.use_iommu){
+                mVideoBuffer->releaseframe();
+            }else{
+                mVideoBuffer->release();
+            }
             mVideoBuffer = NULL;
         }
-		mVideoTimeUs = mSeekTimeUs;
-		mFlags |= FIRST_FRAME;
-		pfrmanager->pause();
-		pfrmanager->flushframes(false);
-		pfrmanager->flushVobSubQueue();
-
+        if(!pfrmanager->mPlayerExtCfg.use_iommu){
+    		mVideoTimeUs = mSeekTimeUs;
+    		mFlags |= FIRST_FRAME;
+    		pfrmanager->pause();
+    		pfrmanager->flushframes(false);
+    		pfrmanager->flushVobSubQueue();
+        }
         if (mSeeking == SEEK && isStreamingHTTP() && mAudioSource != NULL
                 && !(mFlags & SEEK_PREVIEW)) {
             // We're going to seek the video source first, followed by
@@ -2042,21 +2125,19 @@ void AwesomePlayer::onVideoEvent() {
                     mSeeking == SEEK_VIDEO_ONLY
                         ? MediaSource::ReadOptions::SEEK_NEXT_SYNC
                         : MediaSource::ReadOptions::SEEK_CLOSEST_SYNC);
-            if (pfrmanager->mHaveReadOneFrm ==false) {
-                status_t err = mVideoSource->read(&mVideoBuffer, NULL);
-
-                 if(mVideoBuffer) {
-                    if (mVideoBuffer->range_length() == sizeof(VPU_FRAME)) {
-				 	    mVideoBuffer->releaseframe();
-                    } else {
-                        mVideoBuffer->release();
-                    }
-
-                 	mVideoBuffer = NULL;
-				 }
-
-                 pfrmanager->mHaveReadOneFrm = true;
-
+            if(!pfrmanager->mPlayerExtCfg.use_iommu){
+                if (pfrmanager->mHaveReadOneFrm ==false) {
+                    status_t err = mVideoSource->read(&mVideoBuffer, NULL);
+                     if(mVideoBuffer) {
+                        if (mVideoBuffer->range_length() == sizeof(VPU_FRAME)) {
+    				 	    mVideoBuffer->releaseframe();
+                        } else {
+                            mVideoBuffer->release();
+                        }
+                     	mVideoBuffer = NULL;
+    				 }
+                     pfrmanager->mHaveReadOneFrm = true;
+                }
             }
         }
         for (;;) {
@@ -2080,12 +2161,14 @@ void AwesomePlayer::onVideoEvent() {
                     ALOGV("VideoSource signalled format change.");
 
                     notifyVideoSize_l();
-                    int32_t decodedWidth, decodedHeight;
-                    CHECK(mVideoSource->getFormat()->findInt32(kKeyWidth, &decodedWidth));
-                    CHECK(mVideoSource->getFormat()->findInt32(kKeyHeight, &decodedHeight));
-                    mVideoTrack->getFormat()->setInt32(kKeyWidth, decodedWidth);
-                    mVideoTrack->getFormat()->setInt32(kKeyHeight, decodedHeight);
-                    pfrmanager->flushframes(false);
+                    if(!pfrmanager->mPlayerExtCfg.use_iommu){
+                        int32_t decodedWidth, decodedHeight;
+                        CHECK(mVideoSource->getFormat()->findInt32(kKeyWidth, &decodedWidth));
+                        CHECK(mVideoSource->getFormat()->findInt32(kKeyHeight, &decodedHeight));
+                        mVideoTrack->getFormat()->setInt32(kKeyWidth, decodedWidth);
+                        mVideoTrack->getFormat()->setInt32(kKeyHeight, decodedHeight);
+                        pfrmanager->flushframes(false);
+                    }
                     if (mVideoRenderer != NULL) {
                         mVideoRendererIsPreview = false;
                         initRenderer_l();
@@ -2119,83 +2202,88 @@ void AwesomePlayer::onVideoEvent() {
                 mVideoBuffer = NULL;
                 continue;
             }
-            pfrmanager->mHaveReadOneFrm = true;
-			int32_t revertFlag = 0;
+            if(!pfrmanager->mPlayerExtCfg.use_iommu){
+                pfrmanager->mHaveReadOneFrm = true;
+    			int32_t revertFlag = 0;
 
-            VPU_FRAME *frame = (VPU_FRAME *)mVideoBuffer->data();
-            if((!pfrmanager->isSwDecFlag) &&
-                (frame->FrameType || pfrmanager->mCurrentSubIsVobSub) &&
-                (!pfrmanager->deintFlag))
-            {
-                pfrmanager->deintFlag = 1;
-#if USE_DEINTERLACE_DEV
-                if (NULL == pfrmanager->deint) {
-                    pfrmanager->deint = new deinterlace_dev();
+                VPU_FRAME *frame = (VPU_FRAME *)mVideoBuffer->data();
+                if((!pfrmanager->isSwDecFlag) &&
+                    (frame->FrameType || pfrmanager->mCurrentSubIsVobSub) &&
+                    (!pfrmanager->deintFlag) && (frame->FrameWidth <= 1920)&&(frame->FrameHeight <= 1088))
+                {
+                    pfrmanager->deintFlag = 1;
+             #if USE_DEINTERLACE_DEV
                     if (NULL == pfrmanager->deint) {
+                        pfrmanager->deint = new deinterlace_dev(frame->vpumem.size);
+                        if (NULL == pfrmanager->deint) {
+                            pfrmanager->deintFlag = 0;
+                        }
+                    }
+                    if (pfrmanager->deint) {
+                        if (pfrmanager->deint->test()) {
+                            pfrmanager->deintFlag = 0;
+                        }
+                    } else {
+                        ALOGW("failed to open deinterlace device");
                         pfrmanager->deintFlag = 0;
                     }
-                }
-                if (pfrmanager->deint) {
-                    if (pfrmanager->deint->test()) {
-                        pfrmanager->deintFlag = 0;
-                    }
-                } else {
-                    ALOGW("failed to open deinterlace device");
-                    pfrmanager->deintFlag = 0;
-                }
-#else
-                pfrmanager->ipp_fd = open("/dev/rk29-ipp",O_RDWR,0);
-                if(pfrmanager->ipp_fd < 0)
-                {
-                    ALOGI("open /dev/rk29-ipp fail!");
-                    pfrmanager->deintFlag = 0;
-                }
-                else
-                {
-                    pfrmanager->fd.fd = pfrmanager->ipp_fd;
-                    pfrmanager->fd.events = POLLIN;
-                    struct rk29_ipp_req ipp_req;
-                    memset(&ipp_req,0,sizeof(rk29_ipp_req));
-                    ipp_req.deinterlace_enable =2;
-                    ALOGI("test ipp is support or not");
-                    int ret = ioctl(pfrmanager->ipp_fd, IPP_BLIT_ASYNC, &ipp_req);
-                    if(ret)
+             #else
+                    pfrmanager->ipp_fd = open("/dev/rk29-ipp",O_RDWR,0);
+                    if(pfrmanager->ipp_fd < 0)
                     {
+                        ALOGI("open /dev/rk29-ipp fail!");
                         pfrmanager->deintFlag = 0;
-                        close(pfrmanager->ipp_fd);
                     }
-                    ALOGI("test ipp ok");
+                    else
+                    {
+                        pfrmanager->fd.fd = pfrmanager->ipp_fd;
+                        pfrmanager->fd.events = POLLIN;
+                        struct rk29_ipp_req ipp_req;
+                        memset(&ipp_req,0,sizeof(rk29_ipp_req));
+                        ipp_req.deinterlace_enable =2;
+                        ALOGI("test ipp is support or not");
+                        int ret = ioctl(pfrmanager->ipp_fd, IPP_BLIT_ASYNC, &ipp_req);
+                        if(ret)
+                        {
+                            pfrmanager->deintFlag = 0;
+                            close(pfrmanager->ipp_fd);
+                        }
+                        ALOGI("test ipp ok");
+                    }
+            #endif
+                    if(pfrmanager->deintFlag){
+                        pfrmanager->startIppThread();
+                    }
                 }
-#endif
-                if(pfrmanager->deintFlag){
-                    pfrmanager->startIppThread();
-                }
-            }
-			bool geFlag = false;
-            int32_t tvFlag = 0;
-            mVideoBuffer->meta_data()->findInt32(kKeyTvFlag, &tvFlag);
-			geFlag = mVideoBuffer->meta_data()->findInt32(kKeyTimeRevert,&revertFlag);
-            if(revertFlag && geFlag && tvFlag) {
-				ALOGI("revert time stampe find");
-				if (pfrmanager != NULL) {
-					((FrameQueueManage *)pfrmanager)->pause();
-					((FrameQueueManage *)pfrmanager)->flushframes(false);
-					((FrameQueueManage *)pfrmanager)->flushVobSubQueue();
-					((FrameQueueManage *)pfrmanager)->play();
-				}
+    			bool geFlag = false;
+                int32_t tvFlag = 0;
+                mVideoBuffer->meta_data()->findInt32(kKeyTvFlag, &tvFlag);
+    			geFlag = mVideoBuffer->meta_data()->findInt32(kKeyTimeRevert,&revertFlag);
+                if(revertFlag && geFlag && tvFlag) {
+    				ALOGI("revert time stampe find");
+    				if (pfrmanager != NULL) {
+    					((FrameQueueManage *)pfrmanager)->pause();
+    					((FrameQueueManage *)pfrmanager)->flushframes(false);
+    					((FrameQueueManage *)pfrmanager)->flushVobSubQueue();
+    					((FrameQueueManage *)pfrmanager)->play();
+    				}
 
-			}
+    			}
+            }
             break;
         }
-        if (mSeeking == SEEK) {
+		if (mSeeking == SEEK) {
             if (mCachedSource != NULL)
 			    mCachedSource->set_palystate(NuCachedSource2::SEEKING,NuCachedSource2::CLEAR);
+        }
+        if(pfrmanager->mPlayerExtCfg.use_iommu){
+            Mutex::Autolock autoLock(mStatsLock);
+            ++mStats.mNumVideoFramesDecoded;
         }
     }
 
     int64_t timeUs;
     CHECK(mVideoBuffer->meta_data()->findInt64(kKeyTime, &timeUs));
-
 
     if (mSeeking == SEEK_VIDEO_ONLY) {
         if (mSeekTimeUs > timeUs) {
@@ -2204,6 +2292,12 @@ void AwesomePlayer::onVideoEvent() {
         }
     }
 
+    if(pfrmanager->mPlayerExtCfg.use_iommu)
+    {
+	    mLastVideoTimeUs = timeUs;
+        Mutex::Autolock autoLock(mMiscStateLock);
+        mVideoTimeUs = timeUs;
+    }
 
     SeekType wasSeeking = mSeeking;
     finishSeekIfNecessary(timeUs);
@@ -2226,204 +2320,142 @@ void AwesomePlayer::onVideoEvent() {
         ((mFlags & AUDIO_AT_EOS) || !(mFlags & AUDIOPLAYER_STARTED))
             ? &mSystemTimeSource : mTimeSource;
 
-/*    if (mFlags & FIRST_FRAME) {
-        modifyFlags(FIRST_FRAME, CLEAR);
-        mSinceLastDropped = 0;
-        mTimeSourceDeltaUs = ts->getRealTimeUs() - timeUs;
-    }*/
 
-    int64_t realTimeUs, mediaTimeUs;
-    if (!(mFlags & AUDIO_AT_EOS) && mAudioPlayer != NULL
-        && mAudioPlayer->getMediaTimeMapping(&realTimeUs, &mediaTimeUs)) {
-        mTimeSourceDeltaUs = realTimeUs - mediaTimeUs;
-    }
-
-    if (wasSeeking == SEEK_VIDEO_ONLY) {
-        int64_t nowUs = ts->getRealTimeUs() - mTimeSourceDeltaUs;
-
-        int64_t latenessUs = nowUs - timeUs;
-
-        ATRACE_INT("Video Lateness (ms)", latenessUs / 1E3);
-
-        if (latenessUs > 0) {
-            ALOGI("after SEEK_VIDEO_ONLY we're late by %.2f secs", latenessUs / 1E6);
-        }
-    }
-    if ((mNativeWindow != NULL)
-    && (mVideoRendererIsPreview || mVideoRenderer == NULL)) {
-        mVideoRendererIsPreview = false;
-        initRenderer_l();
-    }
-
-    if (wasSeeking != NO_SEEK && (mFlags & SEEK_PREVIEW)){
-        if(mVideoRenderer != NULL){
-            mVideoRenderer->render(mVideoBuffer);
-        }
-        mVideoBuffer->releaseframe();
-        mVideoBuffer = NULL;
-    }
-
-
-    if (mSeeking == NO_SEEK) {
-		if (pfrmanager->cache_full())
-		{
-			postVideoEvent_l(10000);
-		}
-		else
-		{
-
-			if ((mVideoBuffer)&&(mVideoBuffer->data()))
-			{
-				if( pfrmanager->deintFlag)
-				{
-				     pfrmanager->pushDeInterlaceframe(mVideoBuffer);
-				}
-				else
-				{
-					FrameQueue *frame = new FrameQueue(mVideoBuffer);
-                    frame->isSwDec = pfrmanager->isSwDecFlag;
-					pfrmanager->pushframe(frame);
-				}
-
-            }
-            mVideoBuffer = NULL;
-            postVideoEvent_l(200);
-        }
-	}
-    if (wasSeeking != NO_SEEK && (mFlags & SEEK_PREVIEW)) {
-        modifyFlags(SEEK_PREVIEW, CLEAR);
-        return;
-	}
-        // Let's display the first frame after seeking right away.
-#if 0
-        int64_t nowUs = ts->getRealTimeUs() - mTimeSourceDeltaUs;
-
-        int64_t latenessUs = nowUs - timeUs;
-
-        ATRACE_INT("Video Lateness (ms)", latenessUs / 1E3);
-
-        if (latenessUs > 500000ll
-                && mAudioPlayer != NULL
-                && mAudioPlayer->getMediaTimeMapping(
-                    &realTimeUs, &mediaTimeUs)) {
-            if (mWVMExtractor == NULL) {
-                ALOGI("we're much too late (%.2f secs), video skipping ahead",
-                     latenessUs / 1E6);
-
-                mVideoBuffer->release();
-                mVideoBuffer = NULL;
-
-                mSeeking = SEEK_VIDEO_ONLY;
-                mSeekTimeUs = mediaTimeUs;
-
-                postVideoEvent_l();
-                return;
-            } else {
-                // The widevine extractor doesn't deal well with seeking
-                // audio and video independently. We'll just have to wait
-                // until the decoder catches up, which won't be long at all.
-                ALOGI("we're very late (%.2f secs)", latenessUs / 1E6);
-            }
+    if(pfrmanager->mPlayerExtCfg.use_iommu){
+        if (mFlags & FIRST_FRAME) {
+            modifyFlags(FIRST_FRAME, CLEAR);
+            mSinceLastDropped = 0;
+            mTimeSourceDeltaUs = ALooper::GetNowUs() - timeUs;
         }
 
-        if (latenessUs > 40000) {
-            // We're more than 40ms late.
-            ALOGV("we're late by %lld us (%.2f secs)",
-                 latenessUs, latenessUs / 1E6);
+        int64_t nowUs = ALooper::GetNowUs() - mTimeSourceDeltaUs;
+        int64_t realTimeUs, pmediaTimeUs;
+        int64_t mediaTimeUs = nowUs;
 
-            if (!(mFlags & SLOW_DECODER_HACK)
-                    || mSinceLastDropped > FRAME_DROP_FREQ)
+        if (!(mFlags & AUDIO_AT_EOS) && mAudioPlayer != NULL
+            && mAudioPlayer->getMediaTimeMapping(&realTimeUs, &pmediaTimeUs)) {
+              mediaTimeUs = mAudioPlayer->getRealTimeUs();
+              mediaTimeUs = mediaTimeUs - realTimeUs + pmediaTimeUs;
+        }else {
+             mediaTimeUs = 0;
+        }
+
+        if(mediaTimeUs <= 0)
+    		 mediaTimeUs = nowUs;
+
+        if (wasSeeking == NO_SEEK) {
+            // Let's display the first frame after seeking right away.
+            if ((preMediaTimeus != mediaTimeUs)&&(abs(nowUs-mediaTimeUs)>100000ll))
             {
-                ALOGV("we're late by %lld us (%.2f secs) dropping "
-                     "one after %d frames",
-                     latenessUs, latenessUs / 1E6, mSinceLastDropped);
+                nowUs = mediaTimeUs;
+                mTimeSourceDeltaUs = ALooper::GetNowUs() - mediaTimeUs;
+            }
 
-                mSinceLastDropped = 0;
-                mVideoBuffer->release();
-                mVideoBuffer = NULL;
+            preMediaTimeus = mediaTimeUs;
+            int64_t latenessUs = nowUs - timeUs;
 
-                {
-                    Mutex::Autolock autoLock(mStatsLock);
-                    ++mStats.mNumVideoFramesDropped;
-                }
-
-                postVideoEvent_l(0);
+            if (latenessUs < -8000) {
+                // We're more than 10ms early.
+                postVideoEvent_l(8000);
                 return;
             }
         }
 
-        if (latenessUs < -10000) {
-            // We're more than 10ms early.
-            postVideoEvent_l(10000);
+        if ((mNativeWindow != NULL)
+                && (mVideoRendererIsPreview || mVideoRenderer == NULL)) {
+            mVideoRendererIsPreview = false;
+
+            initRenderer_l();
+        }
+
+        if (mVideoRenderer != NULL) {
+            mSinceLastDropped++;
+            mVideoRenderer->render(mVideoBuffer);
+            if (!mVideoRenderingStarted) {
+                mVideoRenderingStarted = true;
+                notifyListener_l(MEDIA_INFO, MEDIA_INFO_RENDERING_START);
+            }
+
+            if (pfrmanager && (pfrmanager->mPlayerExtCfg.isBuffering == true)) {
+                notifyListener_l(MEDIA_INFO, MEDIA_INFO_BUFFERING_END);
+                pfrmanager->mPlayerExtCfg.isBuffering = false;
+            }
+            if (mFlags & PLAYING) {
+                notifyIfMediaStarted_l();
+            }
+        }
+
+        mVideoBuffer->release();
+        mVideoBuffer = NULL;
+
+        if (wasSeeking != NO_SEEK && (mFlags & SEEK_PREVIEW)) {
+            modifyFlags(SEEK_PREVIEW, CLEAR);
             return;
         }
-    }
-
-    if ((mNativeWindow != NULL)
-            && (mVideoRendererIsPreview || mVideoRenderer == NULL)) {
-        mVideoRendererIsPreview = false;
-
-        initRenderer_l();
-    }
-
-    if (mVideoRenderer != NULL) {
-        mSinceLastDropped++;
-        mVideoRenderer->render(mVideoBuffer);
-        if (!mVideoRenderingStarted) {
-            mVideoRenderingStarted = true;
-            notifyListener_l(MEDIA_INFO, MEDIA_INFO_RENDERING_START);
+        postVideoEvent_l();
+    }else{
+        int64_t realTimeUs, mediaTimeUs;
+        if (!(mFlags & AUDIO_AT_EOS) && mAudioPlayer != NULL
+            && mAudioPlayer->getMediaTimeMapping(&realTimeUs, &mediaTimeUs)) {
+            mTimeSourceDeltaUs = realTimeUs - mediaTimeUs;
         }
 
-        if (mFlags & PLAYING) {
-            notifyIfMediaStarted_l();
+        if (wasSeeking == SEEK_VIDEO_ONLY) {
+            int64_t nowUs = ts->getRealTimeUs() - mTimeSourceDeltaUs;
+
+            int64_t latenessUs = nowUs - timeUs;
+
+            ATRACE_INT("Video Lateness (ms)", latenessUs / 1E3);
+
+            if (latenessUs > 0) {
+                ALOGI("after SEEK_VIDEO_ONLY we're late by %.2f secs", latenessUs / 1E6);
+            }
         }
-    }
+        if ((mNativeWindow != NULL)
+        && (mVideoRendererIsPreview || mVideoRenderer == NULL)) {
+            mVideoRendererIsPreview = false;
+            initRenderer_l();
+        }
 
-    mVideoBuffer->release();
-    mVideoBuffer = NULL;
-
-    if (wasSeeking != NO_SEEK && (mFlags & SEEK_PREVIEW)) {
-        modifyFlags(SEEK_PREVIEW, CLEAR);
-        return;
-    }
-
-    /* get next frame time */
-    if (wasSeeking == NO_SEEK) {
-        MediaSource::ReadOptions options;
-        for (;;) {
-            status_t err = mVideoSource->read(&mVideoBuffer, &options);
-            if (err != OK) {
-                // deal with any errors next time
-                CHECK(mVideoBuffer == NULL);
-                postVideoEvent_l(0);
-                return;
+        if (wasSeeking != NO_SEEK && (mFlags & SEEK_PREVIEW)){
+            if(mVideoRenderer != NULL){
+                mVideoRenderer->render(mVideoBuffer);
             }
-
-            if (mVideoBuffer->range_length() != 0) {
-                break;
-            }
-
-            // Some decoders, notably the PV AVC software decoder
-            // return spurious empty buffers that we just want to ignore.
-
-            mVideoBuffer->release();
+            mVideoBuffer->releaseframe();
             mVideoBuffer = NULL;
         }
 
-        {
-            Mutex::Autolock autoLock(mStatsLock);
-            ++mStats.mNumVideoFramesDecoded;
-        }
+        if (mSeeking == NO_SEEK) {
+    		if (pfrmanager->cache_full())
+    		{
+    			postVideoEvent_l(10000);
+    		}
+    		else
+    		{
 
-        int64_t nextTimeUs;
-        CHECK(mVideoBuffer->meta_data()->findInt64(kKeyTime, &nextTimeUs));
-        int64_t delayUs = nextTimeUs - ts->getRealTimeUs() + mTimeSourceDeltaUs;
-        postVideoEvent_l(delayUs > 10000 ? 10000 : delayUs < 0 ? 0 : delayUs);
-        return;
+    			if ((mVideoBuffer)&&(mVideoBuffer->data()))
+    			{
+    				if( pfrmanager->deintFlag)
+    				{
+    				     pfrmanager->pushDeInterlaceframe(mVideoBuffer);
+    				}
+    				else
+    				{
+    					FrameQueue *frame = new FrameQueue(mVideoBuffer);
+                        frame->isSwDec = pfrmanager->isSwDecFlag;
+    					pfrmanager->pushframe(frame);
+    				}
+
+                }
+                mVideoBuffer = NULL;
+                postVideoEvent_l(200);
+            }
+    	}
+        if (wasSeeking != NO_SEEK && (mFlags & SEEK_PREVIEW)) {
+            modifyFlags(SEEK_PREVIEW, CLEAR);
+            return;
+    	}
     }
-
-    postVideoEvent_l();
-#endif
 }
 
 void AwesomePlayer::postVideoEvent_l(int64_t delayUs) {
@@ -2905,8 +2937,12 @@ void AwesomePlayer::beginPrepareAsync_l() {
     }
 
     if ((mVideoTrack != NULL) && ((mVideoSource != NULL && wireless_player_flag == true) || (mVideoSource == NULL && wireless_player_flag==false) )) {
-        status_t err = initVideoDecoder(OMXCodec::kSoftwareCodecsOnly);
-
+        status_t err = 0;
+        if(!pfrmanager->mPlayerExtCfg.use_iommu){
+		   err = initVideoDecoder(OMXCodec::kSoftwareCodecsOnly);
+        }else{
+		   err = initVideoDecoder(OMXCodec::kHardwareCodecsOnly);
+        }
         if (err != OK) {
             abortPrepare(err);
             return;
@@ -2978,38 +3014,37 @@ int64_t AwesomePlayer::onDisplayEvent()
 			nowUs = mediaTimeUs;
 			started_realtime = curtime-mediaTimeUs;
 		}
+
         preMediaTimeus = mediaTimeUs;
 	    int64_t latenessUs = nowUs - timeUs;
-			if (latenessUs < -8000 &&(!( latenessUs < -10000000ll && wireless_player_flag == true))) {
+
+		if (latenessUs < -8000 && (!( latenessUs < -10000000ll && wireless_player_flag == true))) {
 			if (latenessUs<-50000)
 				return 25000;
 	        return - latenessUs-1000;
 	    }
-		//if(latenessUs>11000ll)
-		//LOGD("we're late by %08lld us (%.2f secs)", latenessUs, latenessUs / 1E6);
 
-
-	   if (mVideoRenderer != NULL )
-        {
+        if (mVideoRenderer != NULL ) {
             mVideoRenderer->render(frame->info);
 
-			if (!mVideoRenderingStarted) {
-	            mVideoRenderingStarted = true;
-	            notifyListener_l(MEDIA_INFO, MEDIA_INFO_RENDERING_START);
-	        }
+            if (!mVideoRenderingStarted) {
+                mVideoRenderingStarted = true;
+                notifyListener_l(MEDIA_INFO, MEDIA_INFO_RENDERING_START);
+            }
 
             if (pfrmanager && (pfrmanager->mPlayerExtCfg.isBuffering == true)) {
                 notifyListener_l(MEDIA_INFO, MEDIA_INFO_BUFFERING_END);
                 pfrmanager->mPlayerExtCfg.isBuffering = false;
             }
-			if (mFlags & PLAYING) {
-            	notifyIfMediaStarted_l();
-        	}
+            if (mFlags & PLAYING) {
+                notifyIfMediaStarted_l();
+            }
         }
 
 
-		if (pfrmanager->plastdisplay)
+		if (pfrmanager->plastdisplay) {
 			pfrmanager->plastdisplay->time = curtime;
+		}
 		pfrmanager->plastdisplay = frame;
 		pfrmanager->updateDisplayframe();
 	} else {
@@ -3442,6 +3477,16 @@ status_t AwesomePlayer::invoke(const Parcel &request, Parcel *reply) {
             reply->writeInt32(subFrmDurationMs);
             return OK;
         }
+        case KEY_PARAMETER_SET_BROWSER_REQUEST:
+        {
+            int32_t browserReq = request.readInt32();
+
+            if (pfrmanager && browserReq) {
+                pfrmanager->mPlayerExtCfg.flag |=BROWSER_REQUEST_ENABLE;
+            }
+
+            return OK;
+        }
         default:
         {
             return ERROR_UNSUPPORTED;
@@ -3577,4 +3622,55 @@ void AwesomePlayer::onAudioTearDownEvent() {
     beginPrepareAsync_l();
 }
 
+/*
+ ** This class add to help check url.
+*/
+struct AwesomePlayerHelper {
+
+    AwesomePlayerHelper();
+    ~AwesomePlayerHelper();
+
+    static int32_t isUrlRealM3U8 (const char *url);
+};
+
+AwesomePlayerHelper::AwesomePlayerHelper()
+{
+}
+AwesomePlayerHelper::~AwesomePlayerHelper()
+{
+}
+
+int AwesomePlayerHelper::isUrlRealM3U8 (const char *url)
+{
+    int reallyM3U8 = 0;
+    sp<HTTPBase> connectDataSource = HTTPBase::Create(0);
+    if (connectDataSource !=NULL) {
+        char tmpBuf[100];
+        ssize_t n =0, bufSize =sizeof(tmpBuf);
+        String8 tmpUrl = String8(url);
+        KeyedVector<String8, String8> uriHeaders;
+        status_t err = connectDataSource->connect(tmpUrl, &uriHeaders);
+        if (err == OK) {
+            sp<NuCachedSource2> cachedSource = new NuCachedSource2(
+                    connectDataSource,
+                    NULL,
+                    true);
+            if (cachedSource !=NULL) {
+                memset(tmpBuf, 0, bufSize);
+                n =cachedSource->readAt(0, tmpBuf, bufSize);
+                if (n ==bufSize) {
+                    if (strstr(tmpBuf, "#EXTM3U")) {
+                        reallyM3U8 = true;
+                    }
+                }
+            }
+        } else {
+            ALOGE("connect fail to url: %s", url);
+        }
+    } else {
+        ALOGE("HTTPBase::Create fail");
+    }
+
+    return reallyM3U8;
+}
 }  // namespace android

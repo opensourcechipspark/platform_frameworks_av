@@ -122,6 +122,7 @@ private:
     int64_t mLastFetchTimeUs;
     int32_t mFlag;
     bool	seek_en;
+    bool    cts_flag;
     int32_t mNumRetriesLeft;
 
     size_t mHighwaterThresholdBytes;

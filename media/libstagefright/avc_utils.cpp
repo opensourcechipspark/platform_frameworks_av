@@ -279,9 +279,9 @@ status_t getNextNALUnit(
     }
 
     size_t endOffset = offset - 2;
-    while (endOffset > startOffset + 1 && data[endOffset - 1] == 0x00) {
+  /*  while (endOffset > startOffset + 1 && data[endOffset - 1] == 0x00) {
         --endOffset;
-    }
+    }*/
 
     *nalStart = &data[startOffset];
     *nalSize = endOffset - startOffset;
@@ -571,6 +571,9 @@ sp<MetaData> MakeAACCodecSpecificData(
 
     meta->setData(kKeyESDS, 0, csd->data(), csd->size());
 
+	//0 mean the profile is main,so we set meta is latm type ,make the soft_aac error,then the omxcodec will retry the aacdecoder
+	if(profile == 0)
+		meta->setInt32(kKeyIsLATM, true);
     return meta;
 }
 

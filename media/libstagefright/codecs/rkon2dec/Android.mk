@@ -11,9 +11,10 @@ LOCAL_C_INCLUDES := \
  	$(LOCAL_PATH)/include \
  	$(LOCAL_PATH)/../common/include \
  	$(TOP)/frameworks/av/media/libstagefright/include \
-  $(TOP)/frameworks/native/include/media/openmax \
-  $(TOP)/frameworks/av/media/libstagefright/libvpu/common/include \
-  $(TOP)/frameworks/av/media/libstagefright/libvpu/common
+  	$(TOP)/frameworks/native/include/media/openmax \
+  	$(TOP)/frameworks/av/media/libstagefright/libvpu/common/include \
+    	$(TOP)/frameworks/av/media/libstagefright/libvpu/common \
+    	$(TOP)/hardware/rk29/libon2 \
   
 LOCAL_CFLAGS := -DOSCL_IMPORT_REF= -DOSCL_UNUSED_ARG= -DOSCL_EXPORT_REF=
 

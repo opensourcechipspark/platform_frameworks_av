@@ -260,7 +260,7 @@ status_t WAVExtractor::init() {
 				mBitsPerSample = sWaveFormat.wBitsPerSample;
 				
 				
-				if(mWaveFormat = WAVE_FORMAT_ADPCM){
+				if(mWaveFormat == WAVE_FORMAT_ADPCM){
 						/* sanity check */
 						if ((sWaveFormat.nChannels > 2) ||
 							(sWaveFormat.nBlockAlign > 4096) ||
@@ -401,7 +401,7 @@ status_t WAVExtractor::init() {
 					case WAVE_FORMAT_ADPCM:
 					case WAVE_FORMAT_DVI_ADPCM:
 						mTrackMeta->setCString(
-                                kKeyMIMEType, MEDIA_MIMETYPE_CONTAINER_WAV);
+                                kKeyMIMEType, MEDIA_MIMETYPE_AUDIO_WAV);
 						mTrackMeta->setData(kKeyWavExtInfo, 0, &sWaveFormat, sizeof(sWaveFormat));
 						break;
 #endif//SUPPORT_ADPCM
@@ -725,7 +725,7 @@ bool SniffWAV(
     }
 
     *mimeType = MEDIA_MIMETYPE_CONTAINER_WAV;
-    *confidence = 0.3f;
+    *confidence = WAV_CONTAINER_CONFIDENCE;
 
     return true;
 }

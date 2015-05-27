@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#define NUPLAYER_ENABLE_URL_CHECK 1
+
 #include <media/MediaPlayerInterface.h>
 
 #include <media/stagefright/foundation/ABase.h>

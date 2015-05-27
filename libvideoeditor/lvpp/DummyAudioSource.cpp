@@ -128,6 +128,12 @@ status_t DummyAudioSource::read(
         mTimeStampUs = seekTimeUs;
     }
 
+    /*
+      ** do not set eos here, may be next clip have not completed
+      ** increment audio duration yet.
+      ** @Apr 18th, 2013. by hbb.
+    */
+#if 0
     {
         Mutex::Autolock autoLock(mLock);
         if (mTimeStampUs >= mAudioDurationUs) {
@@ -138,6 +144,7 @@ status_t DummyAudioSource::read(
             return ERROR_END_OF_STREAM;
         }
     }
+#endif
 
     MediaBuffer *buffer;
     status_t err = mBufferGroup->acquire_buffer(&buffer);

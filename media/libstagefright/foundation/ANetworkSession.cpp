@@ -767,7 +767,7 @@ status_t ANetworkSession::Session::writeMore() {
         do {
             const Fragment &frag = *mOutFragments.begin();
             const sp<ABuffer> &datagram = frag.mBuffer;
-			if(1) 
+			if(0) 
 		  	{
 			  unsigned char* buff = (unsigned char*)datagram->data();
 			  int	  len = datagram->size();
@@ -1500,7 +1500,7 @@ status_t ANetworkSession::createClientOrServer(
             goto bail2;
         }
 
-        int tos = 224;  // VOICE
+        int tos = 224;  // VOICE//lowdelayed (defalut)
         res = setsockopt(s, IPPROTO_IP, IP_TOS, &tos, sizeof(tos));
 
         if (res < 0) {

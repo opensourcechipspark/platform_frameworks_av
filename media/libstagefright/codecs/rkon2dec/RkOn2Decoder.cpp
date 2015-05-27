@@ -33,6 +33,7 @@
 #include <cutils/properties.h>
 
 #define MAX_STREAM_LENGHT 1024*500
+#define RKON2_ALIGN(value, x)   ((value + (x-1)) & (~(x-1)))
 
 namespace android {
 
@@ -48,19 +49,22 @@ static const CodeMap kCodeMap[] = {
    { OMX_ON2_VIDEO_CodingH263,  MEDIA_MIMETYPE_VIDEO_H263},
    { OMX_ON2_VIDEO_CodingMPEG4, MEDIA_MIMETYPE_VIDEO_MPEG4},
    { OMX_ON2_VIDEO_CodingVC1,   MEDIA_MIMETYPE_VIDEO_VC1 },
+   { OMX_ON2_VIDEO_CodingWMV,   MEDIA_MIMETYPE_VIDEO_WMV3},
    { OMX_ON2_VIDEO_CodingRV,    MEDIA_MIMETYPE_VIDEO_REALVIDEO},
    { OMX_ON2_VIDEO_CodingAVC,   MEDIA_MIMETYPE_VIDEO_AVC},
    { OMX_ON2_VIDEO_CodingMJPEG, MEDIA_MIMETYPE_VIDEO_MJPEG},
    { OMX_ON2_VIDEO_CodingFLV1,  MEDIA_MIMETYPE_VIDEO_FLV},
    { OMX_ON2_VIDEO_CodingVP8,   MEDIA_MIMETYPE_VIDEO_VP8},
    { OMX_ON2_VIDEO_CodingVP6,   MEDIA_MIMETYPE_VIDEO_VP6},
+   { OMX_RK_VIDEO_CodingHEVC,   MEDIA_MIMETYPE_VIDEO_HEVC},
 };
 
 typedef enum
 {
     MPEG4_MODE = 0,
-    AVC_MODE = 1,
-    VC1_MODE = 2,
+    HEVC_MODE = 1,
+    AVC_MODE = 2,
+    VC1_MODE = 3,
     UNKNOWN_MODE,
 } RKDecodingMode;
 
@@ -77,6 +81,7 @@ RkOn2Decoder::RkOn2Decoder(const sp<MediaSource> &source)
       mHeight(0),
       mVpuCtx(NULL),
       mExtraData(NULL),
+      mPool(NULL),
       mExtraDataSize(0),
       mUseDtsTimeFlag(0),
       _success(true){
@@ -110,7 +115,8 @@ RkOn2Decoder::RkOn2Decoder(const sp<MediaSource> &source)
             _success = false;
         }
     }else{
-        ALOGI("Wimo_Mjpeg--------------------");
+
+        ALOGI("Wimo -------------------- ");
         ALOGI("mWidth = 0x%x,mHeight = 0x%x\n",mWidth,mHeight);
     }
     int ret = vpu_open_context(&mVpuCtx);
@@ -123,9 +129,12 @@ RkOn2Decoder::RkOn2Decoder(const sp<MediaSource> &source)
     mFormat->setCString(kKeyDecoderComponent, "FLVDecoder");
 
     int64_t durationUs;
-    if (mSource->getFormat()->findInt64(kKeyDuration, &durationUs)) {
-        mFormat->setInt64(kKeyDuration, durationUs);
-    }
+	if(mSource!=NULL)
+	{
+	    if (mSource->getFormat()->findInt64(kKeyDuration, &durationUs)) {
+	        mFormat->setInt64(kKeyDuration, durationUs);
+	    }
+	}
 	ALOGV("new RkOn2Decoder out");
 }
 
@@ -140,6 +149,10 @@ RkOn2Decoder::~RkOn2Decoder() {
 	{
 		free(mExtraData);
 		mExtraData = NULL;
+	}
+    if(mPool != NULL){
+        release_vpu_memory_pool_allocator(mPool);
+        mPool = NULL;
 	}
 }
 
@@ -169,6 +182,18 @@ int RkOn2Decoder::getExtraData(int code_mode){
                 }
                 mExtraDataSize= codec_specific_data_size;
                 memcpy(mExtraData,codec_specific_data,mExtraDataSize);
+            }
+            break;
+        }
+        case HEVC_MODE:
+        {
+            if ((meta->findData(kKeyHVCC, &type, &data, &size)) && size) {
+               mExtraData = (uint8_t*)malloc(size);
+                if(!mExtraData){
+                    ALOGE("mExtraData malloc fail");
+                }
+                mExtraDataSize= size;
+                memcpy(mExtraData,data,mExtraDataSize);
             }
             break;
         }
@@ -203,10 +228,20 @@ int RkOn2Decoder::getExtraData(int code_mode){
     return OK;
 }
 status_t RkOn2Decoder::keyDataProcess(){
+    const void *data = NULL;
+    uint32_t type =0;
+    size_t size = 0;
     int32_t vc1extraDataSize = 0;
     sp<MetaData> meta = mSource->getFormat();
     meta->findInt32(kKeyThumbnailDec,&mVpuCtx->no_thread);
     switch(mCodecId){
+        case OMX_RK_VIDEO_CodingHEVC:
+        {
+            mFormat->setInt32(kKeyRkHevc, 1);
+            getExtraData(HEVC_MODE);
+            break;
+        }
+
         case OMX_ON2_VIDEO_CodingMPEG4:
         case OMX_ON2_VIDEO_CodingDIVX3:
         {
@@ -268,17 +303,30 @@ status_t RkOn2Decoder::keyDataProcess(){
             break;
         }
         case OMX_ON2_VIDEO_CodingVC1:
+        case OMX_ON2_VIDEO_CodingWMV:
         {
-            getExtraData(VC1_MODE);
-            meta->findInt32(kKeyVC1ExtraSize, &vc1extraDataSize);
-            mVpuCtx->extra_cfg.vc1extra_size = vc1extraDataSize;
+			mVpuCtx->enableparsing = 1;
+            if (!mVpuCtx->enableparsing) {
+                getExtraData(VC1_MODE);
+                meta->findInt32(kKeyVC1ExtraSize, &vc1extraDataSize);
+                mVpuCtx->extra_cfg.vc1extra_size = vc1extraDataSize;
+            } else {
+                if (meta->findData(kKeyExtraData, &type, &data, &size)) {
+                    mExtraData = (uint8_t*)malloc(size);
+                    if(!mExtraData){
+                        ALOGE("mExtraData malloc fail");
+                    }
+                    mExtraDataSize= size;
+                    memcpy(mExtraData, data, mExtraDataSize);
+                }
+            }
             break;
         }
         case OMX_ON2_VIDEO_CodingVP6:
         {
             int32_t codecinfo = 0;
             CHECK(meta->findInt32(kKeyVp6CodecId, &codecinfo));
-             mVpuCtx->extra_cfg.vp6codeid = codecinfo;
+            mVpuCtx->extra_cfg.vp6codeid = codecinfo;
             break;
         }
         case OMX_ON2_VIDEO_CodingFLV1:
@@ -299,20 +347,37 @@ status_t RkOn2Decoder::start(MetaData *) {
 
     CHECK(!mStarted);
 
-	ALOGV("RkOn2Decoder::start in");
+	ALOGI("RkOn2Decoder::start in");
     if(!_success)
 		return UNKNOWN_ERROR;
 
     mVpuCtx->enableparsing = 0;
     if(keyDataProcess()){
+        ALOGE("RkOn2Decoder::start fail for keyDataProcess");
         return UNKNOWN_ERROR;
     }
     mVpuCtx->width = mWidth;
     mVpuCtx->height = mHeight;
     mVpuCtx->videoCoding = mCodecId;
     mVpuCtx->codecType = CODEC_DECODER;
-    if(mVpuCtx->init(mVpuCtx,mExtraData,mExtraDataSize)){
+    if(mVpuCtx->init(mVpuCtx, mExtraData, mExtraDataSize)){
+        ALOGE("RkOn2Decoder::start fail for mVpuCtx->init");
         return !OK;
+    }
+    if((mWidth != 0) && (mHeight != 0) && !mVpuCtx->no_thread){
+        int32_t align_w= mWidth;
+        if(mCodecId == OMX_RK_VIDEO_CodingHEVC){
+            align_w = ((mWidth+255)&(~255))| 256;
+        }
+        if(0 != create_vpu_memory_pool_allocator(&mPool,8,(align_w*mHeight*2))){
+            return false;
+        }
+        if(mVpuCtx->control(mVpuCtx,VPU_API_SET_VPUMEM_CONTEXT,(void*)mPool) < 0){
+            if(mPool != NULL){
+                release_vpu_memory_pool_allocator(mPool);
+                mPool = NULL;
+            }
+        }
     }
     mSource->start();
     mPendingSeekTimeUs = -1;
@@ -344,12 +409,63 @@ sp<MetaData> RkOn2Decoder::getFormat() {
     return mFormat;
 }
 
+int32_t RkOn2Decoder::checkVideoInfoChange(void* aFrame)
+{
+    if (aFrame ==NULL) {
+        return 0;
+    }
+    if (OMX_RK_VIDEO_CodingHEVC == mCodecId) {
+        return 0;
+    }
+
+    VPU_FRAME* frame = (VPU_FRAME*)aFrame;
+    On2DecPrivate_t* pOn2Privat = &mOn2DecPrivate;
+    int32_t change = 0;
+
+    int32_t w_old = RKON2_ALIGN(mWidth, 16);
+    int32_t h_old = RKON2_ALIGN(mHeight, 16);
+    int32_t w_new = RKON2_ALIGN(frame->DisplayWidth, 16);
+    int32_t h_new = RKON2_ALIGN(frame->DisplayHeight, 16);
+
+    if (!(pOn2Privat->flags & MBAFF_MODE_INFO_CHANGE) &&
+            ((w_old != w_new) || (h_old != h_new))) {
+        mFormat->setInt32(kKeyWidth, frame->DisplayWidth);
+        mFormat->setInt32(kKeyHeight, frame->DisplayHeight);
+        mWidth = frame->DisplayWidth;
+        mHeight = frame->DisplayHeight;
+        change =1;
+        goto CHECK_INFO_OUT;
+    }
+
+    if (!(pOn2Privat->flags & MBAFF_MODE_INFO_CHANGE) &&
+            (frame->FrameHeight >0) &&
+            (frame->FrameHeight !=h_new)) {
+		mFormat->setInt32(kKeyIsMbaff, 1);	
+        mFormat->setInt32(kKeyHeight, frame->FrameHeight);
+        mHeight = frame->FrameHeight;
+        pOn2Privat->flags |=MBAFF_MODE_INFO_CHANGE;
+        change =1;
+        goto CHECK_INFO_OUT;
+    }
+
+CHECK_INFO_OUT:
+    if (change) {
+        ALOGI("video size change, from (%d x %d) to (%d x %d)",
+                w_old, h_old, mWidth, mHeight);
+    }
+    return change;
+}
+
 status_t RkOn2Decoder::read(
         MediaBuffer **out, const ReadOptions *options) {
     *out = NULL;
 
+    if (mVpuCtx == NULL) {
+        ALOGE("invalid vpu context");
+        return !OK;
+    }
+
     On2DecPrivate_t* pOn2Privat = &mOn2DecPrivate;
-    On2TimeStampTrace* p = &mOn2DecPrivate.time_trace;
     int64_t seekTimeUs;
     ReadOptions::SeekMode mode;
     if (options && options->getSeekTo(&seekTimeUs, &mode)) {
@@ -368,7 +484,6 @@ status_t RkOn2Decoder::read(
             CHECK(seekTimeUs >= 0);
             mPendingSeekTimeUs = seekTimeUs;
             mPendingSeekMode = mode;
-            p->init = 0;
 
             if (mInputBuffer) {
                 mInputBuffer->release();
@@ -389,7 +504,6 @@ status_t RkOn2Decoder::read(
         CHECK(seekTimeUs >= 0);
         mPendingSeekTimeUs = seekTimeUs;
         mPendingSeekMode = mode;
-        p->init = 0;
 
         if (mInputBuffer) {
             mInputBuffer->release();
@@ -401,9 +515,7 @@ status_t RkOn2Decoder::read(
     }
 
     if (mInputBuffer == NULL) {
-
         ALOGV("fetching new input buffer.");
-
         bool seeking = false;
 
         for (;;) {
@@ -427,7 +539,6 @@ status_t RkOn2Decoder::read(
             seekOptions.clearSeekTo();
 
             if (err != OK) {
-
                 *out = NULL;
                 return (*out == NULL)  ? err : (status_t)OK;
             }
@@ -436,9 +547,9 @@ status_t RkOn2Decoder::read(
                 break;
             }
 
-                mInputBuffer->release();
-                mInputBuffer = NULL;
-            }
+            mInputBuffer->release();
+            mInputBuffer = NULL;
+        }
 
         if (seeking) {
             int64_t targetTimeUs;
@@ -449,11 +560,20 @@ status_t RkOn2Decoder::read(
                 mTargetTimeUs = -1;
             }
             int seekstatus = 0;
-            if(mInputBuffer->meta_data()->findInt32(kKeySeekFail, &seekstatus) && seekstatus)
+            if (mInputBuffer->meta_data()->findInt32(kKeySeekFail, &seekstatus) && seekstatus)
             {
                 ALOGV("no process");
-            }else{
+            } else{
                 mVpuCtx->flush(mVpuCtx);
+                /*fix when sps pps has change in mp4 steam seek directly will cause decoder error. modify by csy 2014.8.4*/
+                if(mExtraDataSize != 0 && mCodecId == OMX_ON2_VIDEO_CodingAVC){
+                    VideoPacket_t pkt;
+                    memset(&pkt, 0, sizeof(VideoPacket_t));
+                    pkt.nFlags = OMX_BUFFERFLAG_EXTRADATA;
+                    pkt.data = mExtraData;
+                    pkt.size = mExtraDataSize;
+                    mVpuCtx->decode_sendstream(mVpuCtx, &pkt);
+                }
             }
         }
     }
@@ -464,7 +584,6 @@ status_t RkOn2Decoder::read(
     int64_t inputTime = 0LL;
 
     pkt.data = (uint8_t*)mInputBuffer->data() + mInputBuffer->range_offset();
-
     pkt.size = mInputBuffer->range_length();
 
     mInputBuffer->meta_data()->findInt64(kKeyTime, &inputTime);
@@ -474,19 +593,55 @@ status_t RkOn2Decoder::read(
     }else{
         pkt.pts = pkt.dts = inputTime;
     }
+
+    int ret = 0;
     MediaBuffer *aOutBuf = new MediaBuffer(sizeof(VPU_FRAME));
     picture.data = (uint8_t *)aOutBuf->data();
     picture.size = 0;
-    int ret = mVpuCtx->decode(mVpuCtx,&pkt,&picture);
-    if(ret != 0){
-        mInputBuffer->release();
-        mInputBuffer = NULL;
-         if(picture.size){
-            aOutBuf->releaseframe();//INFO Changed ,the output must be NULL;
-         }else{
-            aOutBuf->release();
-         }
-        return !OK;
+
+    /*
+     ** if we have open codec thread in vpu_api, then we can
+     ** try to get output picture every time, this will make
+     ** decoder thread more effective.
+    */
+    if (mVpuCtx->no_thread) {
+        ret = mVpuCtx->decode(mVpuCtx,&pkt,&picture);
+        if(ret != 0){
+            if (mInputBuffer) {
+                mInputBuffer->release();
+                mInputBuffer = NULL;
+            }
+            if(picture.size){
+                aOutBuf->releaseframe();//INFO Changed ,the output must be NULL;
+            }else{
+                aOutBuf->release();
+            }
+            return !OK;
+        }
+    } else {
+        ret = mVpuCtx->decode_sendstream(mVpuCtx, &pkt);
+        if(ret != 0){
+            if (mInputBuffer !=NULL) {
+                mInputBuffer->release();
+                mInputBuffer = NULL;
+            }
+            return !OK;
+        }
+
+        ret = mVpuCtx->decode_getframe(mVpuCtx, &picture);
+        if (ret !=0) {
+            if (mInputBuffer !=NULL) {
+                mInputBuffer->release();
+                mInputBuffer = NULL;
+            }
+
+            if(picture.size){
+                aOutBuf->releaseframe();
+            }else{
+                aOutBuf->release();
+            }
+            return !OK;
+        }
     }
 
     if(picture.size){
@@ -506,22 +661,13 @@ status_t RkOn2Decoder::read(
         }
 
         VPU_FRAME *frame = (VPU_FRAME *)picture.data;
-        int32_t oldWidth = 0;
-        int32_t oldHeight = 0;
-        if((mFormat->findInt32(kKeyWidth, &oldWidth)) &&
-          (mFormat->findInt32(kKeyHeight, &oldHeight))) {
-            int32_t align_oldWidth  = (oldWidth + 15)&(~15);
-            int32_t align_oldHeight = (oldHeight + 15)&(~15);
-            int32_t align_newWidth  = (frame->DisplayWidth + 15)&(~15);
-            int32_t align_newHeight = (frame->DisplayHeight + 15)&(~15);
-            if ((align_oldWidth != align_newWidth) ||
-                    (align_oldHeight != align_newHeight)) {
-
-                mFormat->setInt32(kKeyWidth, frame->DisplayWidth);
-                mFormat->setInt32(kKeyHeight, frame->DisplayHeight);
-                aOutBuf->releaseframe();//INFO Changed ,the output must be NULL;
-                return INFO_FORMAT_CHANGED;
+        if (checkVideoInfoChange(frame)) {
+            aOutBuf->releaseframe();
+            if(mInputBuffer && (!pkt.size)) {
+                mInputBuffer->release();
+                mInputBuffer = NULL;
             }
+            return INFO_FORMAT_CHANGED;
         }
 
         mNumFramesOutput++;
@@ -533,21 +679,11 @@ status_t RkOn2Decoder::read(
         mInputBuffer = NULL;
     }
 
-    int64_t postTimeUs = picture.timeUs;
-    if ((picture.size >0) &&
-        (postProcessTimeStamp(&picture.timeUs, &postTimeUs) !=OK)) {
-        ALOGV("postProcessTimeStamp fail");
-    }
-
-    aOutBuf->meta_data()->setInt64(kKeyTime, postTimeUs);
+    aOutBuf->meta_data()->setInt64(kKeyTime, picture.timeUs);
 
     if (picture.size  <= 0) {
         aOutBuf->set_range(0, 0);
-    } else {
-        ALOGV("picture.timeUs: %lld, postTimeUs: %lld",
-            picture.timeUs, postTimeUs);
     }
-
     *out = aOutBuf;
     return OK;
 }
@@ -578,50 +714,6 @@ void RkOn2Decoder::SetParameterForWimo(const sp<MediaSource> &source)
 
 void RkOn2Decoder::signalBufferReturned(MediaBuffer *buffer) {
 
-}
-
-status_t RkOn2Decoder::postProcessTimeStamp(int64_t *inTimeUs, int64_t *outTimeUs)
-{
-    if ((inTimeUs ==NULL) || (outTimeUs ==NULL)) {
-        return UNKNOWN_ERROR;
-    }
-
-    On2TimeStampTrace* p = &mOn2DecPrivate.time_trace;
-    if (!p->init) {
-        p->pre_timeUs = *inTimeUs;
-        *outTimeUs = *inTimeUs;
-        p->same_cnt =0;
-        p->init = 1;
-        return OK;
-    }
-
-    if (p->pre_timeUs != *inTimeUs) {
-        p->pre_timeUs = *inTimeUs;
-        p->same_cnt =0;
-        *outTimeUs = *inTimeUs;
-        return OK;
-    } else {
-        p->same_cnt++;
-    }
-
-    uint32_t factor = 1;
-    switch(mCodecId){
-        case OMX_ON2_VIDEO_CodingAVC:
-            factor = 66;
-            break;
-        case OMX_ON2_VIDEO_CodingVC1:
-            factor = 40;
-            break;
-        case OMX_ON2_VIDEO_CodingMPEG2:
-            factor = 33;
-            break;
-        default:
-            break;
-    }
-
-    *outTimeUs = (p->same_cnt*factor*1000) + p->pre_timeUs;
-
-    return OK;
 }
 
 }  // namespace android

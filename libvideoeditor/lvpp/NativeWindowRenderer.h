@@ -57,7 +57,6 @@ public:
     RenderInput* createRenderInput();
     void destroyRenderInput(RenderInput* input);
 
-    void* mRkExtenData;
 private:
     // No copy constructor and assignment
     NativeWindowRenderer(const NativeWindowRenderer &);
@@ -142,12 +141,6 @@ private:
     void startRequest(int cmd);
     void sendRequest();
 
-    void yuv420torgb565(uint8_t *yaddr,
-            uint8_t *uaddr,
-            uint8_t *vaddr,
-            int16_t *rgbaddr,
-            uint32_t width,
-            uint32_t height);
     friend class RenderInput;
 };
 

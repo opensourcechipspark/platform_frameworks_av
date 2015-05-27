@@ -35,6 +35,7 @@ struct FLACDecoder : public MediaSource {
     virtual status_t stop();
 
     virtual sp<MetaData> getFormat();
+    int32_t checkFlacFrameHeader(uint8_t* buf, uint32_t size);
 
     virtual status_t read(
             MediaBuffer **buffer, const ReadOptions *options);

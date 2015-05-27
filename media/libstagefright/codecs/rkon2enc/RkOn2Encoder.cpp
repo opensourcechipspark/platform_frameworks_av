@@ -329,13 +329,14 @@ sp<MetaData> RkOn2Encoder::getFormat() {
 status_t RkOn2Encoder::get_encoder_param(void *param)
 {
 	EncParameter_t* vpug = (EncParameter_t*) param;
+	ALOGD("get_encoder_param ");
 	if(mVpuCtx == NULL)
 	{
 		ALOGE("Encoder is not initalied yet");
 		return UNKNOWN_ERROR;
 	}
 	else
-        mVpuCtx->control(mVpuCtx,VPU_API_ENC_GETCFG,(void*)&vpug);
+        mVpuCtx->control(mVpuCtx,VPU_API_ENC_GETCFG,(void*)vpug);
 	return OK;
 }
 
@@ -418,7 +419,7 @@ status_t RkOn2Encoder::read(
             mVpuCtx->control(mVpuCtx,VPU_API_ENC_GETCFG,(void*)&vpug);
 			vpug.rc_mode = 1;
             mVpuCtx->control(mVpuCtx,VPU_API_ENC_SETCFG,(void*)&vpug);
-			ALOGD("wimo rc_mode %d ",vpug.rc_mode );
+			ALOGD("wimo rc_mode111 %d ",vpug.rc_mode );
 		}
         if (mMeta->findInt32(kKeyColorFormat, &mVideoColorFormat)) {
             ALOGI("AVCEncoder input colorFormat: %d", mVideoColorFormat);
@@ -546,8 +547,9 @@ status_t RkOn2Encoder::read(
 		{
             totaldealt = 0;
         }*/
-        if(outPut.size > 200000)
-            ALOGE("ret %d datalen %d",ret,dataLength);
+        if(outPut.size > 200000) {
+            ALOGV("ret %d datalen %d",ret,dataLength);
+        }
 		if (ret < 0 )
 		{
 			outputBuffer->release();

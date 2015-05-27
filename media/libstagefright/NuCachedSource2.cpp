@@ -188,6 +188,7 @@ NuCachedSource2::NuCachedSource2(
       mCacheOffset(0),
       mFlag(0),
       seek_en(false),
+      cts_flag(false),
       mFinalStatus(OK),
       mLastAccessPos(0),
       mFetching(true),
@@ -217,6 +218,13 @@ NuCachedSource2::NuCachedSource2(
     mLooper->setName("NuCachedSource2");
     mLooper->registerHandler(mReflector);
     mLooper->start();
+    char value[PROPERTY_VALUE_MAX];
+    ALOGV("get cts_flag in");
+    if((property_get("sys.cts_gts.status", value, NULL))
+        &&(strstr(value, "true"))){
+        ALOGV("set is cts_flag");
+        cts_flag = true;
+    }
 
     Mutex::Autolock autoLock(mLock);
     (new AMessage(kWhatFetchMore, mReflector->id()))->post();
@@ -378,7 +386,8 @@ void NuCachedSource2::onFetch() {
         mLastFetchTimeUs = ALooper::GetNowUs();
 
         if (mFetching && mCache->totalSize() >= mHighwaterThresholdBytes) {
-			if (update_pos > mCacheOffset+kPageSize)
+		
+			if ((update_pos > mCacheOffset+kPageSize) && !cts_flag)
 			{
 				Mutex::Autolock autoLock(mLock);
 				size_t actualBytes = mCache->releaseFromStart(kPageSize);
@@ -397,7 +406,7 @@ void NuCachedSource2::onFetch() {
                 mFinalStatus = -EAGAIN;
             }
         }
-    } else if(update_pos > mCacheOffset+kPageSize)	{
+    } else if((update_pos > mCacheOffset+kPageSize) && !cts_flag)	{
 			Mutex::Autolock autoLock(mLock);
 		size_t actualBytes = mCache->releaseFromStart(kPageSize);
 		mCacheOffset += actualBytes;
@@ -529,6 +538,7 @@ ssize_t NuCachedSource2::readAt(off64_t offset, void *data, size_t size) {
         return size;
     }
 
+    if(!cts_flag){
 	if (offset > mCacheOffset + mCache->totalSize())
 	{
 		if ((seek_en&&(offset - mCacheOffset - mCache->totalSize() < kDefaultHighWaterThreshold/4))||(offset - mCacheOffset - mCache->totalSize() < kDefaultLowWaterThreshold))
@@ -551,6 +561,7 @@ ssize_t NuCachedSource2::readAt(off64_t offset, void *data, size_t size) {
 			mAsyncWait.clear();
 		}
 	}
+    }
     sp<AMessage> msg = new AMessage(kWhatRead, mReflector->id());
     msg->setInt64("offset", offset);
     msg->setPointer("data", data);
@@ -591,7 +602,9 @@ void NuCachedSource2::updatecache(off64_t offset)
 		else
 			offset = 0;
 	}*/
+    if(!cts_flag){
 	update_pos = offset;
+    }
 }
 size_t NuCachedSource2::cachedSize() {
     Mutex::Autolock autoLock(mLock);
@@ -710,6 +723,7 @@ void NuCachedSource2::getDrmInfo(sp<DecryptHandle> &handle, DrmManagerClient **c
 }
 
 void NuCachedSource2::set_palystate(unsigned value, FlagMode mode) {
+    if(!cts_flag){
     switch (mode) {
         case SET:
         {
@@ -728,6 +742,7 @@ void NuCachedSource2::set_palystate(unsigned value, FlagMode mode) {
             break;
         default:
             TRESPASS();
+        }
     }
     ALOGV("set_palystate mode %d mFlag %d",mode,mFlag);
 }

@@ -110,7 +110,7 @@ private:
     bool mPaused;
 
     int64_t mLastLifesignUs;
-
+    sp<ALooper>		mConvertLooper[2];
     sp<BufferQueue> mBufferQueue;
 
     KeyedVector<size_t, sp<Track> > mTracks;

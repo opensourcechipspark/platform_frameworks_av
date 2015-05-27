@@ -100,7 +100,7 @@ private:
 
     status_t sendRTPPacket(
             const sp<ABuffer> &packet, bool storeInHistory,
-            bool timeValid = false, int64_t timeUs = -1ll);
+            bool timeValid = false, int64_t timeUs = -1ll,int Last_sign = 1);
 
     void onNetNotify(bool isRTP, const sp<AMessage> &msg);
 

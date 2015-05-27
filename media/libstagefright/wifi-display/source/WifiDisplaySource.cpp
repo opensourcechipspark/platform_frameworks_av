@@ -39,8 +39,13 @@
 #include <cutils/properties.h>
 
 #include <ctype.h>
+#include <ui/DisplayInfo.h>  // add by lance 2013.12.27
+#include <gui/SurfaceComposerClient.h>  // add by lance 2013.12.27
+#include <gui/ISurfaceComposer.h>  // add by lance 2013.12.27
+#include "wfd_svn_info.h"
 
 namespace android {
+AString wfd_edtion_info(WFD_COMPILE_INFO);  // add the edtion information for wfd by lance 2014.01.21
 
 // static
 const AString WifiDisplaySource::sUserAgent = MakeUserAgent();
@@ -71,8 +76,30 @@ WifiDisplaySource::WifiDisplaySource(
 
     mSupportedSourceVideoFormats.disableAll();
 
-    mSupportedSourceVideoFormats.setNativeResolution(
-            VideoFormats::RESOLUTION_CEA, 5);  // 1280x720 p30
+    // ---------------
+    // get true native resolution of pad modify by lance 2013.12.27
+    DisplayInfo info;
+    sp<IBinder> display(SurfaceComposerClient::getBuiltInDisplay(ISurfaceComposer::eDisplayIdMain)); 
+    SurfaceComposerClient::getDisplayInfo(display, &info);
+    int temp_val = 0;
+    if(info.w < info.h)
+    {
+        temp_val = info.w;
+	 info.w = info.h;
+	 info.h = temp_val;
+    }
+    if((info.w <= 1280 && info.h <= 800) && (info.w >= 800 && info.h >= 480))
+    {
+        VideoFormats::ResolutionType nativeType;
+        size_t nativeIndex = 0;
+        if(mSupportedSourceVideoFormats.getNativeTypeAndIndex(&nativeType, &nativeIndex, info.w, info.h))
+	{
+	    mSupportedSourceVideoFormats.setNativeResolution(
+            /*VideoFormats::RESOLUTION_CEA*/nativeType, /*5*/nativeIndex);
+	    mSupportedSourceVideoFormats.setProfileLevel(nativeType, nativeIndex, VideoFormats::PROFILE_CHP,  VideoFormats::LEVEL_32);
+	}
+    }
+    // ---------------
 
     // Enable all resolutions up to 1280x720p30
     mSupportedSourceVideoFormats.enableResolutionUpto(
@@ -370,7 +397,9 @@ void WifiDisplaySource::onMessageReceived(const sp<AMessage> &msg) {
 
             if (mClientInfo.mPlaybackSession->getLastLifesignUs()
                     + kPlaybackSessionTimeoutUs < ALooper::GetNowUs()) {
-                ALOGI("playback session timed out, reaping.");
+                ALOGD("playback session timed out, reaping. sys %lld mClientInfo.mPlaybackSession->getLastLifesignUs() %lld kPlaybackSessionTimeoutUs %lld %lld"
+					,ALooper::GetNowUs(),
+                     kPlaybackSessionTimeoutUs);
 
                 mNetSession->destroySession(mClientSessionID);
                 mClientSessionID = 0;
@@ -419,7 +448,7 @@ void WifiDisplaySource::onMessageReceived(const sp<AMessage> &msg) {
                                     &height,
                                     NULL /* framesPerSecond */,
                                     NULL /* interlaced */));
-
+                        ALOGD("WifiDisplaySource width %d height %d",width,height);
                         mClient->onDisplayConnected(
                                 mClientInfo.mPlaybackSession
                                     ->getSurfaceTexture(),
@@ -562,11 +591,13 @@ void WifiDisplaySource::registerResponseHandler(
 
 status_t WifiDisplaySource::sendM1(int32_t sessionID) {
     AString request = "OPTIONS * RTSP/1.0\r\n";
+	 mNextCSeq = 1;
     AppendCommonResponse(&request, mNextCSeq);
 
     request.append(
             "Require: org.wfa.wfd1.0\r\n"
             "\r\n");
+	ALOGD("sendM1 request.c_str() %s mNextCSeq %d",request.c_str(),mNextCSeq);
 
     status_t err =
         mNetSession->sendRequest(sessionID, request.c_str(), request.size());
@@ -585,7 +616,7 @@ status_t WifiDisplaySource::sendM1(int32_t sessionID) {
 
 status_t WifiDisplaySource::sendM3(int32_t sessionID) {
     AString body =
-        "wfd_content_protection\r\n"
+        /*"wfd_content_protection\r\n"*/  // temporary to add it but it will be added modify by lance 2013.12.02
         "wfd_video_formats\r\n"
         "wfd_audio_codecs\r\n"
         "wfd_client_rtp_ports\r\n";
@@ -703,6 +734,7 @@ status_t WifiDisplaySource::sendTrigger(
     request.append(StringPrintf("Content-Length: %d\r\n", body.size()));
     request.append("\r\n");
     request.append(body);
+	ALOGD("sendTrigger triggerType %d request.c_str() %s mNextCSeq %d",triggerType,request.c_str(),mNextCSeq);
 
     status_t err =
         mNetSession->sendRequest(sessionID, request.c_str(), request.size());
@@ -728,6 +760,7 @@ status_t WifiDisplaySource::sendM16(int32_t sessionID) {
             StringPrintf("Session: %d\r\n", mClientInfo.mPlaybackSessionID));
     request.append("\r\n");  // Empty body
 
+	ALOGD("WifiDisplaySource::sendM16 sessionID  request.c_str() %s mNextCSeq %d time %lld", request.c_str(),mNextCSeq,systemTime(SYSTEM_TIME_MONOTONIC) / 1000);
     status_t err =
         mNetSession->sendRequest(sessionID, request.c_str(), request.size());
 
@@ -748,6 +781,7 @@ status_t WifiDisplaySource::sendM16(int32_t sessionID) {
 status_t WifiDisplaySource::onReceiveM1Response(
         int32_t sessionID, const sp<ParsedMessage> &msg) {
     int32_t statusCode;
+	ALOGD("WifiDisplaySource::onReceiveM1Response");
     if (!msg->getStatusCode(&statusCode)) {
         return ERROR_MALFORMED;
     }
@@ -792,6 +826,7 @@ static void GetAudioModes(const char *s, const char *prefix, uint32_t *modes) {
 status_t WifiDisplaySource::onReceiveM3Response(
         int32_t sessionID, const sp<ParsedMessage> &msg) {
     int32_t statusCode;
+	ALOGD("WifiDisplaySource::onReceiveM3Response");
     if (!msg->getStatusCode(&statusCode)) {
         return ERROR_MALFORMED;
     }
@@ -932,9 +967,9 @@ status_t WifiDisplaySource::onReceiveM3Response(
 
     mUsingHDCP = false;
     if (!params->findParameter("wfd_content_protection", &value)) {
-        ALOGI("Sink doesn't appear to support content protection.");
+        ALOGD("Sink doesn't appear to support content protection.");
     } else if (value == "none") {
-        ALOGI("Sink does not support content protection.");
+        ALOGD("Sink does not support content protection.");
     } else {
         mUsingHDCP = true;
 
@@ -951,6 +986,7 @@ status_t WifiDisplaySource::onReceiveM3Response(
         if (!ParsedMessage::GetInt32Attribute(
                     value.c_str() + 8, "port", &hdcpPort)
                 || hdcpPort < 1 || hdcpPort > 65535) {
+            ALOGD("ParsedMessage::GetInt32Attribut error port %s hdcpPort %d",value.c_str() + 8,hdcpPort);
             return ERROR_MALFORMED;
         }
 
@@ -972,11 +1008,14 @@ status_t WifiDisplaySource::onReceiveM3Response(
 status_t WifiDisplaySource::onReceiveM4Response(
         int32_t sessionID, const sp<ParsedMessage> &msg) {
     int32_t statusCode;
+	ALOGD("WifiDisplaySource::onReceiveM4Response");
     if (!msg->getStatusCode(&statusCode)) {
+		ALOGD("!msg->getStatusCode Error");
         return ERROR_MALFORMED;
     }
 
     if (statusCode != 200) {
+		ALOGD("statusCode != 200");
         return ERROR_UNSUPPORTED;
     }
 
@@ -1009,7 +1048,7 @@ status_t WifiDisplaySource::onReceiveM16Response(
     // If only the response was required to include a "Session:" header...
 
     CHECK_EQ(sessionID, mClientSessionID);
-
+	ALOGD("WifiDisplaySource::onReceiveM16Response time %lld",systemTime(SYSTEM_TIME_MONOTONIC) / 1000);
     if (mClientInfo.mPlaybackSession != NULL) {
         mClientInfo.mPlaybackSession->updateLiveness();
     }
@@ -1033,7 +1072,7 @@ void WifiDisplaySource::scheduleKeepAlive(int32_t sessionID) {
 
     sp<AMessage> msg = new AMessage(kWhatKeepAlive, id());
     msg->setInt32("sessionID", sessionID);
-    msg->post(kPlaybackSessionTimeoutUs - 5000000ll);
+    msg->post(kPlaybackSessionTimeoutUs - 25000000ll);
 }
 
 status_t WifiDisplaySource::onReceiveClientData(const sp<AMessage> &msg) {
@@ -1046,7 +1085,7 @@ status_t WifiDisplaySource::onReceiveClientData(const sp<AMessage> &msg) {
     sp<ParsedMessage> data =
         static_cast<ParsedMessage *>(obj.get());
 
-    ALOGV("session %d received '%s'",
+    ALOGD("session %d received '%s'",
           sessionID, data->debugString().c_str());
 
     AString method;
@@ -1202,10 +1241,19 @@ status_t WifiDisplaySource::onSetupRequest(
             rtpMode = RTPSender::TRANSPORT_TCP;
         }
     } else if (transport.startsWith("RTP/AVP;unicast;")
-            || transport.startsWith("RTP/AVP/UDP;unicast;")) {
+            || transport.startsWith("RTP/AVP/UDP;unicast;")
+            || transport.startsWith("RTP/AVP/UDP;unicast ")) {  // add by lance for mtk dongle 2013.09.26
         bool badRequest = false;
 
         AString clientPort;
+
+       //----------------
+       // add by lance for mtk dongle 2013.09.26
+       if (transport.startsWith("RTP/AVP/UDP;unicast ")){
+       	    transport.erase(0, strlen("RTP/AVP/UDP;unicast "));
+       	}
+       //----------------
+	
         if (!ParsedMessage::GetAttribute(
                     transport.c_str(), "client_port", &clientPort)) {
             badRequest = true;
@@ -1238,7 +1286,7 @@ status_t WifiDisplaySource::onSetupRequest(
     sp<AMessage> notify = new AMessage(kWhatPlaybackSessionNotify, id());
     notify->setInt32("playbackSessionID", playbackSessionID);
     notify->setInt32("sessionID", sessionID);
-
+    ALOGD("setup request");
     sp<PlaybackSession> playbackSession =
         new PlaybackSession(
                 mNetSession, notify, mInterfaceAddr, mHDCP, mMediaPath.c_str());

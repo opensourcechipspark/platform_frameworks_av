@@ -97,6 +97,12 @@ struct MetaData;
 #define AV_CH_LAYOUT_7POINT1_WIDE_BACK (AV_CH_LAYOUT_5POINT1_BACK|AV_CH_FRONT_LEFT_OF_CENTER|AV_CH_FRONT_RIGHT_OF_CENTER)
 #define AV_CH_LAYOUT_OCTAGONAL         (AV_CH_LAYOUT_5POINT0|AV_CH_BACK_LEFT|AV_CH_BACK_CENTER|AV_CH_BACK_RIGHT)
 #define AV_CH_LAYOUT_STEREO_DOWNMIX    (AV_CH_STEREO_LEFT|AV_CH_STEREO_RIGHT)
+typedef struct RK_HEVC_PARSER {
+    void* (*init)();
+    int  (*parser)(void* hevcparserHandle,void *packet,void *outpacket);
+    void (*close)(void*  hevcparserHandle);
+    void (*flush)(void*  hevcparserHandle);
+}RK_HEVC_PAESER_S;
 typedef struct tsTimeStamp
 {
     uint32_t low_part;    /** low bits of the signed 64 bit tick value */
@@ -183,6 +189,8 @@ private:
     MediaBuffer * dequeueAccessUnitAAC_LATM();
     MediaBuffer * dequeueAccessUnitMP3();
     sp<AnotherPacketSource> mSource;
+    RK_HEVC_PAESER_S *HevcParser_api;
+    void *hevcparser_handle;
 #ifdef ES_DEBUG
     FILE *fp;
 #endif

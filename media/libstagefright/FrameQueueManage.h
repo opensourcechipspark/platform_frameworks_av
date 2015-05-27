@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <poll.h>
 
+#include <vpu_mem_pool.h>
 #define CACHE_NUM 6
 
 namespace android {
@@ -43,6 +44,9 @@ typedef struct AwesomePlayerExtion{
     uint32_t flag;
     bool isBuffering;
     bool ionMemAllocFail;
+    bool setCacheFlag;
+    int32_t cacheNum;
+    bool use_iommu;
 }AwesomePlayerExt_t;
 
 
@@ -92,7 +96,7 @@ struct deinterlace_dev
     #define USING_PP        (1)
     #define USING_IEP       (2)
     #define USING_NULL      (-1)
-    deinterlace_dev();
+    deinterlace_dev(int size);
     ~deinterlace_dev();
 
     status_t dev_status;
@@ -105,6 +109,7 @@ struct deinterlace_dev
     void *api;
     void *iep_lib_handle;
     struct iep_ops ops;
+    vpu_display_mem_pool *pool;
 };
 
 typedef struct VobBlend {
@@ -160,6 +165,10 @@ struct FrameQueueManage : public RefBase
     	Mutex::Autolock autoLock(mLock);
         if(isSwDecFlag){
             cacheNum = 15;
+        }
+        if(!mPlayerExtCfg.setCacheFlag){
+            cacheNum = mPlayerExtCfg.cacheNum;
+            mPlayerExtCfg.setCacheFlag = true;
         }
 	    if(deintFlag)
 	    {

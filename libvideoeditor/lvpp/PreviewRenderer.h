@@ -56,7 +56,6 @@ private:
     size_t mWidth, mHeight;
 
     ANativeWindowBuffer *mBuf;
-	int32_t rga_fd;
 
     PreviewRenderer(const PreviewRenderer &);
     PreviewRenderer &operator=(const PreviewRenderer &);

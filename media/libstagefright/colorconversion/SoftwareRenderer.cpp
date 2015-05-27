@@ -30,6 +30,7 @@
 #include "rga.h"
 #include <fcntl.h>
 #include "version.h"
+#include "gralloc_priv.h"
 
 struct MemToMemInfo
 {
@@ -40,7 +41,16 @@ struct MemToMemInfo
 
 typedef enum SOFT_RENDER_FRAME_MAP {
     FRAME_CAN_FREE           = 0x01,
+    IS_RK_HEVC_HW            = 0x02,
+    RGA_NOT_SUPPORT_DST_VIR_WIDTH   = 0x04,
 };
+
+typedef enum ANB_PRIVATE_BUF_TYPE {
+    ANB_PRIVATE_BUF_NONE    = 0,
+    ANB_PRIVATE_BUF_VIRTUAL = 0x01,
+    ANB_PRIVATE_BUF_BUTT,
+};
+
 
 #define WRITE_DATA_DEBUG 0
 
@@ -61,10 +71,12 @@ SoftwareRenderer::SoftwareRenderer(
     : mConverter(NULL),
       mYUVMode(None),
       mNativeWindow(nativeWindow),
+      mHintTransform(0),
       init_Flag(true),
       rga_fd(-1),
       power_fd(-1),
-      mHttpFlag(0) {
+      mHttpFlag(0),
+      mFlags (0){
 #if WRITE_DATA_DEBUG
     pOutFile = fopen("/sdcard/Movies/rgb.dat", "wb");
     if (pOutFile) {
@@ -78,6 +90,9 @@ SoftwareRenderer::SoftwareRenderer(
     mSwdecFlag = 0;
     CHECK(meta->findInt32(kKeyColorFormat, &tmp));
     mColorFormat = (OMX_COLOR_FORMATTYPE)tmp;
+    if (meta->findInt32(kKeyRkHevc, &tmp)) {
+        mFlags |=IS_RK_HEVC_HW;
+    }
 
     CHECK(meta->findInt32(kKeyWidth, &mWidth));
     CHECK(meta->findInt32(kKeyHeight, &mHeight));
@@ -110,15 +125,21 @@ SoftwareRenderer::SoftwareRenderer(
     int32_t deInterlaceFlag = 0;
     meta->findInt32(kKeyIsHttp, &mHttpFlag);
 	meta->findInt32(kKeyIsDeInterlace, &deInterlaceFlag);
-    if(property_get("sf.power.control", prop_value, NULL) &&(mWidth*mHeight <= atoi(prop_value))){
+    if(!mHttpFlag){
+		mHttpFlag = VPUMemJudgeIommu();
+    }
+    if(property_get("sf.power.control", prop_value, NULL)&& atoi(prop_value) > 0){
         if(!(mHttpFlag || deInterlaceFlag)){
             power_fd = open("/dev/video_state", O_WRONLY);
             if(power_fd == -1){
                 ALOGE("power control open fd fail");
             }
             ALOGV("power control open fd suceess and write to 1");
-            char c = '1';
-            write(power_fd, &c, 1);
+            char para[200]={0};
+			int paraLen = 0;
+			int ishevc =  mFlags&IS_RK_HEVC_HW;
+			paraLen = sprintf(para, "1,width=%d,height=%d,ishevc=%d,videoFramerate=%d,streamBitrate=%d",mWidth,mHeight,ishevc,0,0);
+            write(power_fd, para, paraLen);
         }
     }
     if (RK30 == mBoardType) {
@@ -144,8 +165,13 @@ SoftwareRenderer::SoftwareRenderer(
         {
             if (!runningInEmulator()) {
                 halFormat = HAL_PIXEL_FORMAT_YV12;
-                bufWidth = (mCropWidth + 1) & ~1;
-                bufHeight = (mCropHeight + 1) & ~1;
+                if ((mWidth % 32) || 1) {
+                    bufWidth = ((mCropWidth + 31) & (~31));
+                    bufHeight = ((mCropHeight + 15)&(~15));
+                } else {
+                bufWidth = ((mCropWidth + 1) & (~1));
+                bufHeight = ((mCropHeight + 1)&(~1));
+                }
                 mSwdecFlag = 1;
                 break;
             }
@@ -155,7 +181,7 @@ SoftwareRenderer::SoftwareRenderer(
 
         default:
 			if(mHttpFlag){
-            	halFormat = HAL_PIXEL_FORMAT_RGBA_8888;
+            	halFormat = HAL_PIXEL_FORMAT_YCrCb_NV12;
 			}else{
 			    halFormat = HAL_PIXEL_FORMAT_YCrCb_NV12_VIDEO;
 			}
@@ -184,25 +210,70 @@ SoftwareRenderer::SoftwareRenderer(
             mNativeWindow.get(),
             NATIVE_WINDOW_SCALING_MODE_SCALE_TO_WINDOW));
 
-    CHECK_EQ(0, native_window_set_buffer_count(mNativeWindow.get(), 4));
+#if 0   /* let surfaceFlinger decide to alloc buffer count */
+    /*
+     ** we need to request more than 3 counts(current min buffer count in gui)
+     ** from native window in network case, other wise request will be fail.
+    */
+    if (mHttpFlag) {
+        CHECK_EQ(0, native_window_set_buffer_count(mNativeWindow.get(), 4));
+    } else {
+        CHECK_EQ(0, native_window_set_buffer_count(mNativeWindow.get(), 2));
+    }
+#endif
 
     android_native_rect_t crop;
 	crop.left = 0;
 	crop.top = 0;
     crop.right = mWidth - 64; //if no 4 aglin crop csy
 	crop.bottom = mHeight;
+
     if(halFormat != HAL_PIXEL_FORMAT_YV12){
 	    crop.right = mWidth & (~3); //if no 4 aglin crop csy
 		crop.bottom = mHeight;
 
+        int32_t tmpWidth = 0;
+        if (mFlags & IS_RK_HEVC_HW) {
+            tmpWidth = (((bufWidth  + 255)&(~255)) | 256);
+        } else {
+            tmpWidth = ((bufWidth  + 15)&(~15));
+        }
+        if (tmpWidth >4096) {
+            mFlags |=RGA_NOT_SUPPORT_DST_VIR_WIDTH;
+        }
+
 	    if(RK30 == mBoardType && mHttpFlag){
-	        bufWidth = (bufWidth  + 31)&(~31);
-	        bufHeight = (bufHeight + 15)&(~15);
+            if (mFlags & IS_RK_HEVC_HW) {
+                if (!(mFlags & RGA_NOT_SUPPORT_DST_VIR_WIDTH)) {
+                     bufWidth = (((bufWidth  + 255)&(~255)) | 256);
+                }
+	            bufHeight = (bufHeight + 7)&(~7);
+            } else {
+                if (!(mFlags & RGA_NOT_SUPPORT_DST_VIR_WIDTH)) {
+                    bufWidth = (bufWidth  + 31)&(~31);
+                }
+	            bufHeight = (bufHeight + 15)&(~15);
+            }
 	    }else{
-	        bufWidth = (bufWidth  + 15)&(~15);
-	        bufHeight = (bufHeight + 15)&(~15);
+	        if (mFlags & IS_RK_HEVC_HW) {
+                if (!(mFlags & RGA_NOT_SUPPORT_DST_VIR_WIDTH)) {
+                    bufWidth = (((bufWidth  + 255)&(~255)) | 256);
+                }
+	            bufHeight = (bufHeight + 7)&(~7);
+            } else {
+                if (!(mFlags & RGA_NOT_SUPPORT_DST_VIR_WIDTH)) {
+                    bufWidth = (bufWidth  + 15)&(~15);
+                }
+	            bufHeight = (bufHeight + 15)&(~15);
+            }
 		}
     }
+
+	int32_t isMbaff =0;
+    if (meta->findInt32(kKeyIsMbaff, &isMbaff) && isMbaff) {
+        crop.bottom = (crop.bottom >16) ? crop.bottom - 16 : crop.bottom;
+    }
+	
     CHECK_EQ(0, native_window_set_buffers_geometry(
                 mNativeWindow.get(),
                 bufWidth,
@@ -226,39 +297,106 @@ SoftwareRenderer::SoftwareRenderer(
     }
 }
 
-static int32_t hwcYuv2RGB(void *dst,  VPU_FRAME *frame ,int32_t mWidth,int32_t mHeight,int32_t rga_fd) {
-   int32_t Width  = (mWidth + 15)&(~15);
-    int32_t Height = (mHeight + 15)&(~15);
+static int32_t hwcYuv2Yuv(
+            private_handle_t* anb_handle,
+            VPU_FRAME *frame ,
+            int32_t mWidth,
+            int32_t mHeight,
+            int32_t rga_fd,
+            int32_t flags,
+            int32_t transform,
+            void* mapper_dst) {
+    if ((anb_handle ==NULL) || (rga_fd <0)) {
+        return -1;
+    }
+
     struct rga_req  Rga_Request;
     memset(&Rga_Request,0x0,sizeof(Rga_Request));
-    Rga_Request.src.yrgb_addr =  (int)frame->FrameBusAddr[0]+ 0x60000000;
-    Rga_Request.src.uv_addr  = Rga_Request.src.yrgb_addr + ((Width + 15)&(~15)) * ((Height+ 15)&(~15));
-    Rga_Request.src.v_addr   =  Rga_Request.src.uv_addr;
-    Rga_Request.src.vir_w = (Width + 15)&(~15);
-    Rga_Request.src.vir_h = (Height + 15)&(~15);
-    Rga_Request.src.format = RK_FORMAT_YCbCr_420_SP;
+    
+    if (!VPUMemJudgeIommu()) {
+        Rga_Request.src.uv_addr  = frame->FrameBusAddr[0];
+    }else{
+        Rga_Request.src.yrgb_addr = frame->FrameBusAddr[0];
+        Rga_Request.src.uv_addr  = (int32_t)frame->vpumem.vir_addr;
+    }
 
-  	Rga_Request.src.act_w = Width;
-    Rga_Request.src.act_h = Height;
+    if (flags & IS_RK_HEVC_HW) {
+        Rga_Request.src.vir_w = (((mWidth + 255)&(~255)) | 256);
+        Rga_Request.src.vir_h = (mHeight + 7)&(~7);
+    } else {
+        Rga_Request.src.vir_w = (mWidth + 15)&(~15);
+        Rga_Request.src.vir_h = (mHeight + 15)&(~15);
+    }
+    Rga_Request.src.format = RK_FORMAT_YCbCr_420_SP;
+  	Rga_Request.src.act_w = mWidth;
+    Rga_Request.src.act_h = mHeight;
     Rga_Request.src.x_offset = 0;
     Rga_Request.src.y_offset = 0;
-    Rga_Request.dst.yrgb_addr = (uint32_t)dst;
+    Rga_Request.dst.yrgb_addr = anb_handle->share_fd;
     Rga_Request.dst.uv_addr  = 0;
     Rga_Request.dst.v_addr   = 0;
-   	Rga_Request.dst.vir_w = (Width + 31)&(~31);
-    Rga_Request.dst.vir_h = Height;
-    Rga_Request.dst.format = RK_FORMAT_RGBA_8888;
+    if (flags & IS_RK_HEVC_HW) {
+        if (!(flags & RGA_NOT_SUPPORT_DST_VIR_WIDTH)) {
+            Rga_Request.dst.vir_w = (((mWidth + 255)&(~255)) | 256);
+        } else {
+            Rga_Request.dst.vir_w = mWidth;
+        }
+        Rga_Request.dst.vir_h = (mHeight + 7)&(~7);
+    } else {
+        if (!(flags & RGA_NOT_SUPPORT_DST_VIR_WIDTH)) {
+            Rga_Request.dst.vir_w = (mWidth + 31)&(~31);
+        } else {
+            Rga_Request.dst.vir_w = mWidth;
+        }
+        Rga_Request.dst.vir_h = (mHeight + 15)&(~15);
+    }
+    Rga_Request.dst.format = RK_FORMAT_YCbCr_420_SP;
     Rga_Request.clip.xmin = 0;
-    Rga_Request.clip.xmax = (Width + 31)&(~31) - 1;
     Rga_Request.clip.ymin = 0;
-    Rga_Request.clip.ymax = Height - 1;
-	Rga_Request.dst.act_w = Width;
-	Rga_Request.dst.act_h = Height;
+    if (flags & IS_RK_HEVC_HW) {
+        if (!(flags & RGA_NOT_SUPPORT_DST_VIR_WIDTH)) {
+            Rga_Request.clip.xmax = (((mWidth + 255)&(~255)) | 256) -1;
+        } else {
+            Rga_Request.clip.xmax = mWidth;
+        }
+        Rga_Request.clip.ymax = (mHeight + 7)&(~7) -1;
+    } else {
+        if (!(flags & RGA_NOT_SUPPORT_DST_VIR_WIDTH)) {
+            Rga_Request.clip.xmax = (mWidth + 31)&(~31) - 1;
+        } else {
+            Rga_Request.clip.xmax = mWidth;
+        }
+        Rga_Request.clip.ymax = (mHeight + 15)&(~15) - 1;
+    }
+	Rga_Request.dst.act_w = mWidth;
+	Rga_Request.dst.act_h = mHeight;
 	Rga_Request.dst.x_offset = 0;
 	Rga_Request.dst.y_offset = 0;
 	Rga_Request.rotate_mode = 0;
-   	Rga_Request.mmu_info.mmu_en    = 1;
-   	Rga_Request.mmu_info.mmu_flag  = ((2 & 0x3) << 4) | 1;
+   	Rga_Request.mmu_info.mmu_en    = 0;
+    Rga_Request.render_mode = pre_scaling_mode;
+#if 0
+    if(transform == HAL_TRANSFORM_ROT_270){
+        Rga_Request.dst.act_w = Rga_Request.dst.vir_h;
+        Rga_Request.dst.act_h = Rga_Request.dst.vir_w;
+        Rga_Request.dst.x_offset = 0;
+        Rga_Request.dst.y_offset = Rga_Request.dst.vir_h-1;
+        Rga_Request.sina = -65536;
+        Rga_Request.cosa = 0;
+        Rga_Request.rotate_mode = 1;
+    }
+#endif
+    if (anb_handle->type == ANB_PRIVATE_BUF_VIRTUAL) {
+        Rga_Request.dst.uv_addr = 0;// (unsigned int)mapper_dst;
+        Rga_Request.mmu_info.mmu_en = 1;
+        Rga_Request.mmu_info.mmu_flag = ((2 & 0x3) << 4) | 1;
+        if (VPUMemJudgeIommu()) {
+            Rga_Request.mmu_info.mmu_flag |=((1<<31) | (1<<10) | (1<<8));
+        } else {
+            Rga_Request.mmu_info.mmu_flag |=((1<<31) | (1<<10));
+        }
+    }
+
 	if(ioctl(rga_fd, RGA_BLIT_SYNC, &Rga_Request) != 0)
 	{
         ALOGE("rga RGA_BLIT_SYNC fail");
@@ -266,9 +404,20 @@ static int32_t hwcYuv2RGB(void *dst,  VPU_FRAME *frame ,int32_t mWidth,int32_t m
     return 0;
 }
 
-static int32_t hwcRender(void *dst,int32_t Width,int32_t Height,int32_t rga_fd) {
+
+static int32_t hwcRender(
+            private_handle_t* anb_handle,
+            int32_t Width,
+            int32_t Height,
+            int32_t rga_fd,
+            void* mapper_dst) {
+    if ((anb_handle ==NULL) || (rga_fd <0)) {
+        return -1;
+    }
+
     struct rga_req  Rga_Request;
     memset(&Rga_Request,0x0,sizeof(Rga_Request));
+
     Rga_Request.src.vir_w = (Width + 15)&(~15);
     Rga_Request.src.vir_h = (Height + 15)&(~15);
     Rga_Request.src.format = RK_FORMAT_YCbCr_420_SP;
@@ -276,14 +425,16 @@ static int32_t hwcRender(void *dst,int32_t Width,int32_t Height,int32_t rga_fd) 
     Rga_Request.src.act_h = Height;
     Rga_Request.src.x_offset = 0;
     Rga_Request.src.y_offset = 0;
-    Rga_Request.dst.yrgb_addr = (uint32_t)dst;
+    Rga_Request.dst.yrgb_addr = anb_handle->share_fd;
     Rga_Request.dst.uv_addr  = 0;
     Rga_Request.dst.v_addr   = 0;
-   	Rga_Request.dst.vir_w = (Width + 31)&(~31);
-    Rga_Request.dst.vir_h = Height;
+	Rga_Request.dst.vir_w = (Width + 31)&(~31);
+	Rga_Request.dst.vir_h = Height;
     Rga_Request.dst.format = RK_FORMAT_RGB_565;
     Rga_Request.clip.xmin = 0;
-    Rga_Request.clip.xmax = (Width + 31)&(~31) - 1;
+
+	Rga_Request.clip.xmax = (Width + 31)&(~31) -1;
+
     Rga_Request.clip.ymin = 0;
     Rga_Request.clip.ymax = Height - 1;
 	Rga_Request.dst.act_w = Width;
@@ -292,8 +443,12 @@ static int32_t hwcRender(void *dst,int32_t Width,int32_t Height,int32_t rga_fd) 
 	Rga_Request.dst.y_offset = 0;
 	Rga_Request.rotate_mode = 0;
     Rga_Request.render_mode = color_fill_mode;
-   	Rga_Request.mmu_info.mmu_en    = 1;
-   	Rga_Request.mmu_info.mmu_flag  = ((2 & 0x3) << 4) | 1;
+    if (anb_handle->type == ANB_PRIVATE_BUF_VIRTUAL) {
+        Rga_Request.dst.uv_addr  =  (unsigned int)mapper_dst;
+        Rga_Request.mmu_info.mmu_en = 1;
+   	    Rga_Request.mmu_info.mmu_flag  = ((2 & 0x3) << 4) | 1;
+        Rga_Request.mmu_info.mmu_flag |= (1<<31) | (1<<10);
+    }
 	if(ioctl(rga_fd, RGA_BLIT_SYNC, &Rga_Request) != 0)
 	{
         ALOGE("rga RGA_BLIT_SYNC fail");
@@ -311,9 +466,11 @@ SoftwareRenderer::~SoftwareRenderer() {
 #endif
     int err;
     bool mStatus = true;
+    int32_t Width = 1280;
+    int32_t Height = 720;
     if(!mHttpFlag && init_Flag){
         if (rga_fd >0){
-            if(native_window_set_buffers_geometry(mNativeWindow.get(),(mWidth + 31)&(~31),(mHeight + 15)&(~15),
+            if(native_window_set_buffers_geometry(mNativeWindow.get(),(Width + 31)&(~31),(Height + 15)&(~15),
                         HAL_PIXEL_FORMAT_RGB_565) != 0){
                 ALOGE("native_window_set_buffers_geometry fail");
                 goto Fail;
@@ -321,20 +478,20 @@ SoftwareRenderer::~SoftwareRenderer() {
             android_native_rect_t crop;
             crop.left = 0;
             crop.top = 0;
-            crop.right = mWidth;
-            crop.bottom = mHeight;
+            crop.right = Width;
+            crop.bottom = Height;
             CHECK_EQ(0, native_window_set_crop(mNativeWindow.get(), &crop));
         }else{
             if(native_window_set_buffers_geometry(mNativeWindow.get(),
-                    (mWidth + 15)&(~15),(mHeight + 15)&(~15),HAL_PIXEL_FORMAT_YCrCb_NV12) != 0){
+                    (Width + 15)&(~15),(Height + 15)&(~15),HAL_PIXEL_FORMAT_YCrCb_NV12) != 0){
                 ALOGE("native_window_set_buffers_geometry fail");
                 goto Fail;
             }
             android_native_rect_t crop;
             crop.left = 0;
             crop.top = 0;
-            crop.right = mWidth;
-            crop.bottom = mHeight;
+            crop.right = Width;
+            crop.bottom = Height;
         }
         ANativeWindowBuffer *buf;
         if ((err = native_window_dequeue_buffer_and_wait(mNativeWindow.get(),
@@ -342,17 +499,17 @@ SoftwareRenderer::~SoftwareRenderer() {
             goto Fail;
         }
         GraphicBufferMapper &mapper = GraphicBufferMapper::get();
-        Rect bounds((mWidth + 15)&(~15), (mHeight + 15)&(~15));
+        Rect bounds((Width + 15)&(~15), (Height + 15)&(~15));
         void *dst;
         if(mapper.lock(
                     buf->handle, GRALLOC_USAGE_SW_WRITE_OFTEN, bounds, &dst) != 0){
             goto Fail;
         }
-        int32_t Width = (mWidth + 15)&(~15);
-        int32_t Height = (mHeight + 15)&(~15);
+
         if (rga_fd >0) {
             ALOGV("SoftwareRenderer deconstruct, use rag render one RGB565 frame");
-            if(hwcRender(dst,Width,Height,rga_fd)< 0){
+            private_handle_t *handle = (private_handle_t*)buf->handle;
+            if(hwcRender(handle, Width, Height, rga_fd, dst) <0){
                 mStatus = false;
             }
         }else{
@@ -391,10 +548,13 @@ Fail:
     mConverter = NULL;
     char prop_value[PROPERTY_VALUE_MAX];
     if(property_get("sf.power.control", prop_value, NULL) && atoi(prop_value) > 0){
-        char c = '0';
+        char para[200]={0};
+        int paraLen = 0;
+        int ishevc =  mFlags&IS_RK_HEVC_HW;
+		paraLen = sprintf(para, "0,width=%d,height=%d,ishevc=%d,videoFramerate=%d,streamBitrate=%d",mWidth,mHeight,ishevc,0,0);
         if(power_fd > 0){
             ALOGV("power control close fd and write to 0");
-            write(power_fd, &c, 1);
+            write(power_fd, para, paraLen);
             close(power_fd);
         }
     }
@@ -417,6 +577,21 @@ void SoftwareRenderer::render(
         ALOGE("Board config no found no render");
         return;
     }
+    if(mHttpFlag){
+        int32_t tmptransform = 0;
+        mNativeWindow->query(mNativeWindow.get(), NATIVE_WINDOW_TRANSFORM_HINT, &tmptransform);
+        if(tmptransform != mHintTransform){
+            mHintTransform = tmptransform;
+            switch(tmptransform){
+                case HAL_TRANSFORM_ROT_270:
+                    CHECK_EQ(0, native_window_set_buffers_transform(mNativeWindow.get(), HAL_TRANSFORM_ROT_90));
+                    break;
+                default:
+                    CHECK_EQ(0, native_window_set_buffers_transform(mNativeWindow.get(), 0));
+                    break;
+            }
+        }
+    }
     if ((err = native_window_dequeue_buffer_and_wait(mNativeWindow.get(),
             &buf)) != 0) {
         ALOGE("Surface::dequeueBuffer returned error %d", err);
@@ -430,13 +605,15 @@ void SoftwareRenderer::render(
     }
 
     GraphicBufferMapper &mapper = GraphicBufferMapper::get();
-
-    Rect bounds((mWidth + 15)&(~15), (mHeight+ 15)&(~15));
+    int32_t align = (mSwdecFlag == true) ? (2-1) : (16-1);
+    Rect bounds((mWidth + align)&(~align), (mHeight + align)&(~align));
 
     void *dst;
     CHECK_EQ(0, mapper.lock(
                 buf->handle, GRALLOC_USAGE_SW_WRITE_OFTEN, bounds, &dst));
 
+
+    private_handle_t *handle = (private_handle_t*)buf->handle;
 
     if(!mStructId.isEmpty()&& !mHttpFlag && !mSwdecFlag)
     {
@@ -538,26 +715,92 @@ void SoftwareRenderer::render(
     VPU_FRAME *frame = (VPU_FRAME *)data;
     if(!mHttpFlag){
 		if(mSwdecFlag){
-        	memcpy(dst,data,mWidth*mHeight*3/2);
+            if ((mWidth % 32) || 1) {
+                int32_t k =0;
+                int32_t n = mWidth * mHeight;
+                int32_t w1 = ((mWidth + 31) & (~31));
+                int32_t h1 = ((mHeight + 15) & (~15));
+                int32_t n_align = w1 * h1;
+
+                uint8_t* pYSrc = (uint8_t*)data;
+                uint8_t* pVSrc = (uint8_t*)data + n;
+                uint8_t* pUSrc = (uint8_t*)data + n*5/4;
+
+                uint8_t* pYDst = (uint8_t*)dst;
+                uint8_t* pUDst = (uint8_t*)dst + n_align;
+                uint8_t* pVDst = (uint8_t*)dst + n_align*5/4;
+
+                for (k =0; k <mHeight; k++) {
+                    memcpy(pYDst, pYSrc, mWidth);
+                    pYSrc +=mWidth;
+                    pYDst +=w1;
+                }
+
+                for (k =0; k <(mHeight >>1); k++) {
+                    memcpy(pUDst, pUSrc, (mWidth >>1));
+                    pUSrc +=(mWidth >>1);
+                    pUDst +=(w1 >>1);
+
+                    memcpy(pVDst, pVSrc, (mWidth >>1));
+                    pVSrc +=(mWidth >>1);
+                    pVDst +=(w1 >>1);
+                }
+            } else {
+                memcpy(dst, data, mWidth * mHeight *3/2);
+            }
         }else{
-	        frame->FrameWidth = (mWidth + 15)&(~15);
-	        frame->FrameHeight = (mHeight + 15)&(~15);
+            if (!(mFlags & IS_RK_HEVC_HW)) {
+    	        frame->FrameWidth = (mWidth + 15)&(~15);
+    	        frame->FrameHeight = (mHeight + 15)&(~15);
+                frame->OutputWidth = 0x21;//default NV12_video
+            }
 	        VPU_FRAME *info = (VPU_FRAME *)malloc(sizeof(VPU_FRAME));
 	    	ALOGV("push buffer Id = 0x%x",buf);
 	        memcpy(info,data,sizeof(VPU_FRAME));
 	    	VPUMemLink(&frame->vpumem);
 	        VPUMemDuplicate(&info->vpumem,&frame->vpumem);
 	    	VPUFreeLinear(&frame->vpumem);
+#if GET_VPU_INTO_FROM_HEAD
 	        memcpy(dst,info,sizeof(VPU_FRAME));
+#else
+	        memcpy(dst+2*handle->stride*handle->height,info,sizeof(VPU_FRAME));
+#endif
 	        info->Res[0] = (uint32_t)buf;
             info->Res[1] = 0;
 	        mStructId.push(info);
 		}
     }else{
         if(mSwdecFlag){
+        	if ((mWidth % 32) || 1) {
+                int32_t k =0;
+                int32_t n = mWidth * mHeight;
+                int32_t w1 = ((mWidth + 31) & (~31));
+                int32_t h1 = ((mHeight + 15) & (~15));
+                int32_t n_align = w1 * h1;
+                uint8_t* pYSrc = (uint8_t*)data;
+                uint8_t* pVSrc = (uint8_t*)data + n;
+                uint8_t* pUSrc = (uint8_t*)data + n*5/4;
+                uint8_t* pYDst = (uint8_t*)dst;
+                uint8_t* pUDst = (uint8_t*)dst + n_align;
+                uint8_t* pVDst = (uint8_t*)dst + n_align*5/4;
+                for (k =0; k <mHeight; k++) {
+                    memcpy(pYDst, pYSrc, mWidth);
+                    pYSrc +=mWidth;
+                    pYDst +=w1;
+                }
+                for (k =0; k <(mHeight >>1); k++) {
+                    memcpy(pUDst, pUSrc, (mWidth >>1));
+                    pUSrc +=(mWidth >>1);
+                    pUDst +=(w1 >>1);
+                    memcpy(pVDst, pVSrc, (mWidth >>1));
+                    pVSrc +=(mWidth >>1);
+                    pVDst +=(w1 >>1);
+                }
+            } else {
         	memcpy(dst,data,mWidth*mHeight*3/2);
+            }
         } else if (rga_fd >0) {
-           hwcYuv2RGB(dst,frame,mWidth,mHeight,rga_fd);
+            hwcYuv2Yuv(handle,frame,mWidth,mHeight,rga_fd, mFlags, mHintTransform, dst);
         }
     }
 #if WRITE_DATA_DEBUG

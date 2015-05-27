@@ -10,6 +10,7 @@
 #include "ppOp.h"
 
 #include <dlfcn.h>
+#include <cutils/properties.h>
 
 namespace android {
 
@@ -62,6 +63,8 @@ FrameQueueManage::FrameQueueManage()
     isSwDecFlag = false;
     memset(&mPlayerExtCfg, 0, sizeof(AwesomePlayerExt_t));
     memset(&mVobBlend, 0, sizeof(VobBlend_t));
+    mPlayerExtCfg.use_iommu = 1;
+    ALOGI("use_iommu = 0x%x",mPlayerExtCfg.use_iommu);
 }
 
 FrameQueueManage::~FrameQueueManage()
@@ -528,11 +531,11 @@ int FrameQueueManage::DeinterlaceProc()
         VPUMemLinear_t deInterlaceFrame;
         ipp_req.src0.YrgbMst = vpu_frame->FrameBusAddr[0];
         ipp_req.src0.CbrMst = vpu_frame->FrameBusAddr[1];
-        ipp_req.src0.w = vpu_frame->FrameWidth;
-        ipp_req.src0.h = vpu_frame->FrameHeight;
+        ipp_req.src0.w = vpu_frame->DisplayWidth;
+        ipp_req.src0.h = vpu_frame->DisplayHeight;
         ipp_req.src0.fmt = IPP_Y_CBCR_H2V2;
-        ipp_req.dst0.w = vpu_frame->FrameWidth;
-        ipp_req.dst0.h = vpu_frame->FrameHeight;
+        ipp_req.dst0.w = vpu_frame->DisplayWidth;
+        ipp_req.dst0.h = vpu_frame->DisplayHeight;
         ipp_req.src_vir_w = vpu_frame->FrameWidth;
         ipp_req.dst_vir_w = vpu_frame->FrameWidth;
         ipp_req.timeout = 100;
@@ -658,8 +661,10 @@ void FrameQueueManage::DeinterlacePoll()
 #include "vpu.h"
 #include <cutils/properties.h> // for property_get
 
-deinterlace_dev::deinterlace_dev()
-	:dev_status(USING_NULL),dev_fd(-1),priv_data(NULL)
+deinterlace_dev::deinterlace_dev(int size)
+	:dev_status(USING_NULL),dev_fd(-1),
+	pool(NULL),
+	priv_data(NULL)
 {
     dev_fd = open("/dev/rk29-ipp", O_RDWR, 0);
     if (dev_fd > 0) {
@@ -674,21 +679,21 @@ deinterlace_dev::deinterlace_dev()
 
             ops.claim = (void* (*)())dlsym(iep_lib_handle, "iep_ops_claim");
             ops.reclaim = (void* (*)(void *iep_obj))dlsym(iep_lib_handle, "iep_ops_reclaim");
-            ops.init_discrete = (int (*)(void *iep_obj, 
-                          int src_act_w, int src_act_h, 
+            ops.init_discrete = (int (*)(void *iep_obj,
+                          int src_act_w, int src_act_h,
                           int src_x_off, int src_y_off,
-                          int src_vir_w, int src_vir_h, 
-                          int src_format, 
+                          int src_vir_w, int src_vir_h,
+                          int src_format,
                           int src_mem_addr, int src_uv_addr, int src_v_addr,
-                          int dst_act_w, int dst_act_h, 
+                          int dst_act_w, int dst_act_h,
                           int dst_x_off, int dst_y_off,
-                          int dst_vir_w, int dst_vir_h, 
-                          int dst_format, 
+                          int dst_vir_w, int dst_vir_h,
+                          int dst_format,
                           int dst_mem_addr, int dst_uv_addr, int dst_v_addr))dlsym(iep_lib_handle, "iep_ops_init_discrete");
             ops.config_yuv_deinterlace = (int (*)(void *iep_obj))dlsym(iep_lib_handle, "iep_ops_config_yuv_deinterlace");
             ops.run_async_ncb = (int (*)(void *iep_obj))dlsym(iep_lib_handle, "iep_ops_run_async_ncb");
             ops.poll = (int (*)(void *iep_obj))dlsym(iep_lib_handle, "iep_ops_poll");
-            if (ops.claim == NULL || ops.reclaim == NULL || ops.init_discrete == NULL 
+            if (ops.claim == NULL || ops.reclaim == NULL || ops.init_discrete == NULL
                 || ops.config_yuv_deinterlace == NULL || ops.run_async_ncb == NULL || ops.poll == NULL) {
                 ALOGE("dlsym iep library failure\n");
                 dlclose(iep_lib_handle);
@@ -720,6 +725,10 @@ deinterlace_dev::deinterlace_dev()
             }
         }
     }
+   if (0 > create_vpu_memory_pool_allocator(&pool, 2, size)) {
+       ALOGE("Create vpu memory pool for deinterlace failed\n");
+       pool = NULL;
+   }
 }
 
 deinterlace_dev::~deinterlace_dev()
@@ -743,13 +752,16 @@ deinterlace_dev::~deinterlace_dev()
     default : {
     } break;
     }
+    if (pool) {
+        release_vpu_memory_pool_allocator(pool);
+    }
 }
 
 status_t deinterlace_dev::perform(VPU_FRAME *frm, uint32_t bypass)
 {
     status_t ret = NO_INIT;
     VPUMemLinear_t deInterlaceFrame;
-    ret = VPUMallocLinear(&deInterlaceFrame, frm->FrameHeight*frm->FrameWidth*3/2);
+    ret = VPUMallocLinearFromRender(&deInterlaceFrame, frm->FrameHeight*frm->FrameWidth*3/2, (void*)pool);
     if (!ret) {
         uint32_t width    = frm->FrameWidth;
         uint32_t height   = frm->FrameHeight;
@@ -765,11 +777,11 @@ status_t deinterlace_dev::perform(VPU_FRAME *frm, uint32_t bypass)
             memset(&ipp_req,0,sizeof(rk29_ipp_req));
             ipp_req.src0.YrgbMst = srcYAddr;
             ipp_req.src0.CbrMst  = srcCAddr;
-            ipp_req.src0.w = width;
-            ipp_req.src0.h = height;
+            ipp_req.src0.w = frm->DisplayWidth;
+            ipp_req.src0.h = frm->DisplayHeight;
             ipp_req.src0.fmt = IPP_Y_CBCR_H2V2;
-            ipp_req.dst0.w = width;
-            ipp_req.dst0.h = height;
+            ipp_req.dst0.w = frm->DisplayWidth;
+            ipp_req.dst0.h = frm->DisplayHeight;
             ipp_req.src_vir_w = width;
             ipp_req.dst_vir_w = width;
             ipp_req.timeout = 100;
@@ -784,13 +796,13 @@ status_t deinterlace_dev::perform(VPU_FRAME *frm, uint32_t bypass)
         } break;
         case USING_IEP : {
             /**
-            IEP_FORMAT_ARGB_8888    = 0x0,    
-            IEP_FORMAT_ABGR_8888    = 0x1,    
-            IEP_FORMAT_RGBA_8888    = 0x2,    
+            IEP_FORMAT_ARGB_8888    = 0x0,
+            IEP_FORMAT_ABGR_8888    = 0x1,
+            IEP_FORMAT_RGBA_8888    = 0x2,
             IEP_FORMAT_BGRA_8888    = 0x3,
             IEP_FORMAT_RGB_565      = 0x4,
             IEP_FORMAT_BGR_565      = 0x5,
-                   
+
             IEP_FORMAT_YCbCr_422_SP = 0x10,
             IEP_FORMAT_YCbCr_422_P  = 0x11,
             IEP_FORMAT_YCbCr_420_SP = 0x12,
@@ -799,11 +811,11 @@ status_t deinterlace_dev::perform(VPU_FRAME *frm, uint32_t bypass)
             IEP_FORMAT_YCrCb_422_P  = 0x15,
             IEP_FORMAT_YCrCb_420_SP = 0x16,
             IEP_FORMAT_YCrCb_420_P  = 0x17
-            */ 
+            */
 
             ops.init_discrete(api, width, height, 0, 0, width, height, 0x12, srcYAddr, srcCAddr, 0,
                                   width, height, 0, 0, width, height, 0x12, dstYAddr, dstCAddr, 0);
-            
+
             if (!bypass) {
                 if (0 > ops.config_yuv_deinterlace(api)) {
                     ALOGE("Failure to Configure YUV DEINTERLACE\n");
@@ -811,7 +823,7 @@ status_t deinterlace_dev::perform(VPU_FRAME *frm, uint32_t bypass)
             }
 
             ops.run_async_ncb(api);
-            
+
         } break;
         case USING_PP : {
             if (NULL == priv_data) {

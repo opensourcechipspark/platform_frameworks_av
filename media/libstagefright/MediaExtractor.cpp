@@ -68,15 +68,6 @@ sp<MediaExtractor> MediaExtractor::Create(
         mime = tmp.string();
         ALOGV("Autodetected media content as '%s' with confidence %.2f",
              mime, confidence);
-    } else {
-        tmp = mime;
-        if (!source->sniff(&tmp, &confidence, &meta)) {
-            ALOGV("FAILED to autodetect media content.");
-            return NULL;
-        }
-        ALOGV("Autodetected media content as '%s' with confidence %.2f",
-        mime, confidence);
-        mime = tmp.string();
     }
 
     bool isDrm = false;

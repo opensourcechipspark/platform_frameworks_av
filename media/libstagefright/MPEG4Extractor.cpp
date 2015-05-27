@@ -63,6 +63,11 @@ static const char mov_mdhd_language_map[][4] = {
 };
 
 #define RK_ARRAY_ELEMS(a) (sizeof(a) / sizeof((a)[0]))
+
+typedef struct Mpeg4Extension {
+    int32_t mal_cnt;        //counter of mal bitstream
+}Mpeg4Extension_t;
+
 class MPEG4Source : public MediaSource {
 public:
     // Caller retains ownership of both "dataSource" and "sampleTable".
@@ -139,6 +144,8 @@ private:
 
     int64_t mSrcDurationUs;
     int64_t mLastCts;
+    Mpeg4Extension_t mExten;
+
     size_t parseNALSize(const uint8_t *data) const;
     status_t parseChunk(off64_t *offset);
     status_t parseTrackFragmentHeader(off64_t offset, off64_t size);
@@ -916,6 +923,10 @@ status_t MPEG4Extractor::parseChunk(off64_t *offset, int depth) {
             while (*offset < stop_offset) {
                 status_t err = parseChunk(offset, depth + 1);
                 if (err != OK) {
+                    if(chunk_type == FOURCC('u', 'd', 't', 'a')){
+                        *offset = stop_offset;
+                         break;
+                    }
                     return err;
                 }
             }
@@ -1014,6 +1025,12 @@ status_t MPEG4Extractor::parseChunk(off64_t *offset, int depth) {
                     mLastTrack->meta->setInt32(kKeyEncoderDelay, delay);
 
                     int64_t paddingus = duration - (segment_duration + media_time);
+                    if (paddingus < 0) {
+                        // track duration from media header (which is what kKeyDuration is) might
+                        // be slightly shorter than the segment duration, which would make the
+                        // padding negative. Clamp to zero.
+                        paddingus = 0;
+                    }
                     int64_t paddingsamples = (paddingus * samplerate + 500000) / 1000000;
                     mLastTrack->meta->setInt32(kKeyEncoderPadding, paddingsamples);
                 }
@@ -1418,7 +1435,6 @@ status_t MPEG4Extractor::parseChunk(off64_t *offset, int depth) {
             }
             ALOGV("*** coding='%s' %d channels, size %d, rate %d\n",
                    chunk, num_channels, sample_size, sample_rate);
-            mLastTrack->meta->setCString(kKeyMIMEType, FourCC2MIME(chunk_type));
             mLastTrack->meta->setInt32(kKeyChannelCount, num_channels);
             mLastTrack->meta->setInt32(kKeySampleRate, sample_rate);
 
@@ -2537,12 +2553,20 @@ status_t MPEG4Extractor::updateAudioTrackInfoFromESDS_MPEG4Audio(
         return ERROR_MALFORMED;
     }
 
+    static uint32_t kSamplingRate[] = {
+        96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050,
+        16000, 12000, 11025, 8000, 7350
+    };
+
     ABitReader br(csd, csd_size);
     uint32_t objectType = br.getBits(5);
 
     if (objectType == 31) {  // AAC-ELD => additional 6 bits
         objectType = 32 + br.getBits(6);
     }
+
+    //keep AOT type
+    mLastTrack->meta->setInt32(kKeyAACAOT, objectType);
 
     uint32_t freqIndex = br.getBits(4);
 
@@ -2556,29 +2580,30 @@ status_t MPEG4Extractor::updateAudioTrackInfoFromESDS_MPEG4Audio(
         numChannels = br.getBits(4);
     } else {
         numChannels = br.getBits(4);
-        if (objectType == 5) {
-            // SBR specific config per 14496-3 table 1.13
-            freqIndex = br.getBits(4);
-            if (freqIndex == 15) {
-                if (csd_size < 8) {
-                    return ERROR_MALFORMED;
-                }
-                sampleRate = br.getBits(24);
-            }
+
+        if (freqIndex == 13 || freqIndex == 14) {
+            return ERROR_MALFORMED;
         }
 
-        if (sampleRate == 0) {
-            static uint32_t kSamplingRate[] = {
-                96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050,
-                16000, 12000, 11025, 8000, 7350
-            };
+        sampleRate = kSamplingRate[freqIndex];
+    }
 
-            if (freqIndex == 13 || freqIndex == 14) {
+    if (objectType == 5 || objectType == 29) { // SBR specific config per 14496-3 table 1.13
+        uint32_t extFreqIndex = br.getBits(4);
+        int32_t extSampleRate;
+        if (extFreqIndex == 15) {
+            if (csd_size < 8) {
                 return ERROR_MALFORMED;
             }
-
-            sampleRate = kSamplingRate[freqIndex];
+            extSampleRate = br.getBits(24);
+        } else {
+            if (extFreqIndex == 13 || extFreqIndex == 14) {
+                return ERROR_MALFORMED;
+            }
+            extSampleRate = kSamplingRate[extFreqIndex];
         }
+        //TODO: save the extension sampling rate value in meta data =>
+        //      mLastTrack->meta->setInt32(kKeyExtSampleRate, extSampleRate);
     }
 
     if (numChannels == 0) {
@@ -2660,6 +2685,7 @@ MPEG4Source::MPEG4Source(
     bool success = mFormat->findCString(kKeyMIMEType, &mime);
     CHECK(success);
 
+    memset(&mExten, 0, sizeof(Mpeg4Extension_t));
     mFormat->findInt64(kKeyDuration, &mSrcDurationUs);
     mIsAVC = !strcasecmp(mime, MEDIA_MIMETYPE_VIDEO_AVC);
     mIsHEVC = !strcasecmp(mime, MEDIA_MIMETYPE_VIDEO_HEVC);
@@ -3334,11 +3360,14 @@ status_t MPEG4Source::read(
     *out = NULL;
 
     int64_t targetSampleTimeUs = -1;
+    Mpeg4Extension_t* p = &mExten;
 
     int64_t seekTimeUs =0;
     ReadOptions::SeekMode mode;
     if (options && options->getSeekTo(&seekTimeUs, &mode)) {
         uint32_t findFlags = 0;
+        memset(p, 0, sizeof(Mpeg4Extension_t));
+
         switch (mode) {
             case ReadOptions::SEEK_PREVIOUS_SYNC:
                 findFlags = SampleTable::kFlagBefore;
@@ -3373,6 +3402,14 @@ status_t MPEG4Source::read(
                     sampleIndex, &syncSampleIndex, findFlags);
         }
 
+        if ((sampleIndex >0) && (syncSampleIndex ==0)) {
+            const char *mime;
+            if ((mFormat != NULL) &&
+                    mFormat->findCString(kKeyMIMEType, &mime) &&
+                    (!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_AAC))) {
+                syncSampleIndex = sampleIndex;
+            }
+        }
         int64_t sampleTime;
         if (err == OK) {
             err = mSampleTable->getMetaDataForSample(
@@ -3430,6 +3467,15 @@ status_t MPEG4Source::read(
     int64_t cts;
     bool isSyncSample;
     bool newBuffer = false;
+
+MPEG4_NEXT_SAMPLE:
+    offset =0;
+    offsetfornet =0;
+    size =0;
+    cts =0;
+    isSyncSample = false;
+    newBuffer = false;
+
     if (mBuffer == NULL) {
         newBuffer = true;
 
@@ -3465,6 +3511,8 @@ status_t MPEG4Source::read(
     if(mIsHEVC){
         ssize_t num_bytes_read = 0;
         int32_t drm = 0;
+
+#ifdef HEVC_DEC_USE_SOFTWARE
         num_bytes_read = mDataSource->readAt(offset, mSrcBuffer, size);
 
         if (num_bytes_read < (ssize_t)size) {
@@ -3491,12 +3539,31 @@ status_t MPEG4Source::read(
                 continue;
             }
             CHECK(dstOffset + 4 <= mBuffer->size());
+            dstData[dstOffset++] = 0;
+            dstData[dstOffset++] = 0;
+            dstData[dstOffset++] = 0;
+            dstData[dstOffset++] = 1;
+
             memcpy(&dstData[dstOffset], &mSrcBuffer[srcOffset], nalLength);
             srcOffset += nalLength;
             dstOffset += nalLength;
         }
+
         CHECK(mBuffer != NULL);
         mBuffer->set_range(0, dstOffset);
+#else
+        num_bytes_read = mDataSource->readAt(offset, (uint8_t*)mBuffer->data(), size);
+
+        if (num_bytes_read < (ssize_t)size) {
+            mBuffer->release();
+            mBuffer = NULL;
+            return ERROR_IO;
+        }
+
+        CHECK(mBuffer != NULL);
+        mBuffer->set_range(0, size);
+#endif
+
         mBuffer->meta_data()->clear();
         mBuffer->meta_data()->setInt64(
                 kKeyTime, ((int64_t)cts * 1000000) / mTimescale);
@@ -3670,10 +3737,18 @@ status_t MPEG4Source::read(
             mBuffer->release();
             mBuffer = NULL;
 
+            off64_t fileSize =0;
+            if (mDataSource !=NULL) {
+                mDataSource->getSize(&fileSize);
+            }
             if(num_bytes_read == INFO_TIME_OUT){
                 return INFO_TIME_OUT;
             }
-            return ERROR_IO;
+            if ((fileSize >0) && ((offset + num_bytes_read) >=fileSize)) {
+                return ERROR_END_OF_STREAM;
+            } else {
+                return ERROR_IO;
+            }
         }
 
         if (usesDRM) {
@@ -3684,25 +3759,47 @@ status_t MPEG4Source::read(
             uint8_t *dstData = (uint8_t *)mBuffer->data();
             size_t srcOffset = 0;
             size_t dstOffset = 0;
+            size_t nalInvalidCnt =0;
 
             while (srcOffset < size) {
                 bool isMalFormed = (srcOffset + mNALLengthSize > size);
-                size_t nalLength = 0;
+                int nalLength = 0;
                 if (!isMalFormed) {
                     nalLength = parseNALSize(&mSrcBuffer[srcOffset]);
                     srcOffset += mNALLengthSize;
+                    if(nalLength <= 0){
+                        p->mal_cnt++;
+                    }
                     isMalFormed = srcOffset + nalLength > size;
                 }
 
                 if (isMalFormed) {
                     ALOGE("Video is malformed");
-                  //  mBuffer->release();
-                  // mBuffer = NULL;
+                    if (p->mal_cnt++ >=2000) {
+
+                        mCurrentSampleIndex++;
+                        if (mBuffer) {
+                            mBuffer->release();
+                            mBuffer = NULL;
+                        }
+                        goto MPEG4_NEXT_SAMPLE;
+                    }
+
                     break;
+                } else {
+                    if(nalLength > 0) {
+                        p->mal_cnt = 0;
+					}
                 }
 
-                if (nalLength == 0) {
-                    continue;
+                if (nalLength <= 0) {
+                    if (nalInvalidCnt++ <=2000) {
+                        continue;
+                    } else {
+                        break;
+                    }
+                } else {
+                    nalInvalidCnt =0;
                 }
 
                 CHECK(dstOffset + 4 <= mBuffer->size());
@@ -4176,7 +4273,7 @@ static bool BetterSniffMPEG4(
                     brand = ntohl(brand);
 
                     if (isCompatibleBrand(brand)) {
-                        if( FOURCC('q', 't', ' ', ' ') == brand){
+                        if(FOURCC('q', 't', ' ', ' ') == brand){
                             isQtFileType = true;
                         }
                         foundGoodFileType = true;

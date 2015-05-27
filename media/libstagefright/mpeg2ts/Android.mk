@@ -13,7 +13,8 @@ LOCAL_C_INCLUDES:= \
 		$(JNI_H_INCLUDE) \
 		$(TOP)/frameworks/native/include/media/openmax \
 		$(TOP)/frameworks/av/media/libstagefright \
-		$(TOP)/frameworks/av/media/libstagefright/ffmpg/include
+		$(TOP)/frameworks/av/media/libstagefright/ffmpg/include \
+        	$(TOP)/hardware/rk29/libon2
 
 LOCAL_MODULE:= libstagefright_mpeg2ts
 

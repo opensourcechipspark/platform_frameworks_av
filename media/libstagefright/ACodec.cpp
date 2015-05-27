@@ -364,6 +364,7 @@ ACodec::ACodec()
       mIsEncoder(false),
       mUseMetadataOnEncoderOutput(false),
       mShutdownInProgress(false),
+      mIsConfiguredForAdaptivePlayback(false),
       mEncoderDelay(0),
       mEncoderPadding(0),
       mChannelMaskPresent(false),
@@ -371,7 +372,8 @@ ACodec::ACodec()
       mDequeueCounter(0),
       mStoreMetaDataInOutputBuffers(false),
       mMetaDataBuffersToSubmit(0),
-      mRepeatFrameDelayUs(-1ll) {
+      mRepeatFrameDelayUs(-1ll),
+      mMaxPtsGapUs(-1l) {
     mUninitializedState = new UninitializedState(this);
     mLoadedState = new LoadedState(this);
     mLoadedToIdleState = new LoadedToIdleState(this);
@@ -464,6 +466,7 @@ void ACodec::signalSubmitOutputMetaDataBufferIfEOS_workaround() {
         (new AMessage(kWhatSubmitOutputMetaDataBufferIfEOS, id()))->post();
     }
 }
+
 status_t ACodec::allocateBuffersOnPort(OMX_U32 portIndex) {
     CHECK(portIndex == kPortIndexInput || portIndex == kPortIndexOutput);
 
@@ -564,6 +567,7 @@ status_t ACodec::configureOutputBuffersFromNativeWindow(
     OMX_PARAM_PORTDEFINITIONTYPE def;
     InitOMXParams(&def);
     def.nPortIndex = kPortIndexOutput;
+    bool hevcFlag = false;
 
     status_t err = mOMX->getParameter(
             mNode, OMX_IndexParamPortDefinition, &def, sizeof(def));
@@ -577,22 +581,26 @@ status_t ACodec::configureOutputBuffersFromNativeWindow(
     crop.top = 0;
     crop.right = def.format.video.nFrameWidth & (~3); //if no 4 aglin crop csy
     crop.bottom = def.format.video.nFrameHeight;
-    int rga_fd = -1;
-    rga_fd  = open("/dev/rga",O_RDWR,0);
-    if (rga_fd > 0) {
-    err = native_window_set_buffers_geometry(
-             mNativeWindow.get(),
-             (def.format.video.nFrameWidth + 31)&(~31),
-             (def.format.video.nFrameHeight + 15)&(~15),
-             def.format.video.eColorFormat);
-		close(rga_fd);
+    if(!strcmp(mComponentName.c_str(),"OMX.rk.video_decoder.hevc")){
+        hevcFlag = true;
+        ALOGV("is hevc decoder");
+    }
+
+    int bufWidth = def.format.video.nFrameWidth;
+    int bufHeight = def.format.video.nFrameHeight;
+    if(hevcFlag){
+        bufWidth = ((bufWidth + 255)&(~255))|(256);
+        bufHeight = ((bufHeight + 7)&(~7));
     }else{
+        bufWidth = ((bufWidth + 15)&(~15));
+        bufHeight = ((bufHeight + 15)&(~15));
+    }
             err = native_window_set_buffers_geometry(
             mNativeWindow.get(),
-            (def.format.video.nFrameWidth + 15)&(~15),
-            (def.format.video.nFrameHeight + 15)&(~15),
+        bufWidth,
+        bufHeight,
             def.format.video.eColorFormat);
-    }
+
 
     if (err != 0) {
         ALOGE("native_window_set_buffers_geometry failed: %s (%d)",
@@ -1000,6 +1008,8 @@ status_t ACodec::setComponentRole(
             "audio_decoder.gsm", "audio_encoder.gsm" },
 		{ MEDIA_MIMETYPE_VIDEO_MPEG2,
             "video_decoder.mpeg2", "video_encoder.mpeg2"},  //add by rk csy
+        {MEDIA_MIMETYPE_VIDEO_HEVC,
+            "video_decoder.hevc","not_support"},
     };
 
     static const size_t kNumMimeToRole =
@@ -1130,6 +1140,10 @@ status_t ACodec::configureCodec(
                     &mRepeatFrameDelayUs)) {
             mRepeatFrameDelayUs = -1ll;
         }
+
+        if (!msg->findInt64("max-pts-gap-to-encoder", &mMaxPtsGapUs)) {
+            mMaxPtsGapUs = -1l;
+        }
     }
 
     // Always try to enable dynamic output buffers on native surface
@@ -1137,6 +1151,7 @@ status_t ACodec::configureCodec(
     int32_t haveNativeWindow = msg->findObject("native-window", &obj) &&
             obj != NULL;
     mStoreMetaDataInOutputBuffers = false;
+    mIsConfiguredForAdaptivePlayback = false;
     if (!encoder && video && haveNativeWindow) {
         err = mOMX->storeMetaDataInBuffers(mNode, kPortIndexOutput, OMX_TRUE);
         if (err != OK) {
@@ -1181,12 +1196,14 @@ status_t ACodec::configureCodec(
                 ALOGW_IF(err != OK,
                         "[%s] prepareForAdaptivePlayback failed w/ err %d",
                         mComponentName.c_str(), err);
+                mIsConfiguredForAdaptivePlayback = (err == OK);
             }
             // allow failure
             err = OK;
         } else {
             ALOGV("[%s] storeMetaDataInBuffers succeeded", mComponentName.c_str());
             mStoreMetaDataInOutputBuffers = true;
+            mIsConfiguredForAdaptivePlayback = true;
         }
 
         int32_t push;
@@ -1724,6 +1741,21 @@ status_t ACodec::setVideoPortFormatType(
             }
         }
 
+        if (!strcmp("OMX.rk.video_encoder.avc", mComponentName.c_str())) {
+
+            if (portIndex == kPortIndexInput
+                    && colorFormat == format.eColorFormat) {
+                // eCompressionFormat does not seem right.
+                found = true;
+                break;
+            }
+            if (portIndex == kPortIndexOutput
+                    && compressionFormat == format.eCompressionFormat) {
+                // eColorFormat does not seem right.
+                found = true;
+                break;
+            }
+        }
         if (format.eCompressionFormat == compressionFormat
             && format.eColorFormat == colorFormat) {
             found = true;
@@ -1771,6 +1803,7 @@ static const struct VideoCodingMapEntry {
     { MEDIA_MIMETYPE_VIDEO_MPEG2, OMX_VIDEO_CodingMPEG2 },
     { MEDIA_MIMETYPE_VIDEO_VP8, OMX_VIDEO_CodingVP8 },
     { MEDIA_MIMETYPE_VIDEO_VP9, OMX_VIDEO_CodingVP9 },
+    { MEDIA_MIMETYPE_VIDEO_HEVC, (OMX_VIDEO_CODINGTYPE)OMX_VIDEO_CodingHEVC},
 };
 
 static status_t GetVideoCodingTypeFromMime(
@@ -3309,11 +3342,11 @@ void ACodec::BaseState::onInputBufferFilled(const sp<AMessage> &msg) {
                 mCodec->mInputEOSResult = err;
             }
             break;
-
-            default:
-                CHECK_EQ((int)mode, (int)FREE_BUFFERS);
-                break;
         }
+
+        default:
+            CHECK_EQ((int)mode, (int)FREE_BUFFERS);
+            break;
     }
 }
 
@@ -3376,7 +3409,9 @@ bool ACodec::BaseState::onOMXFillBufferDone(
     BufferInfo *info =
         mCodec->findBufferByID(kPortIndexOutput, bufferID, &index);
 
-    CHECK_EQ((int)info->mStatus, (int)BufferInfo::OWNED_BY_COMPONENT);
+    if (info->mStatus != BufferInfo::OWNED_BY_COMPONENT) {
+        return true;
+    }
 
     info->mDequeuedAt = ++mCodec->mDequeueCounter;
     info->mStatus = BufferInfo::OWNED_BY_US;
@@ -3676,7 +3711,8 @@ bool ACodec::UninitializedState::onAllocateComponent(const sp<AMessage> &msg) {
 
         int32_t flags = OMXCodec::kHardwareCodecsOnly;
         if((!strncasecmp(mime.c_str(), "audio/", 6)) ||
-            (!strncasecmp(mime.c_str(), "video/x-vnd.on2.vp9", 19)))
+            (!strncasecmp(mime.c_str(), "video/x-vnd.on2.vp9", 19)) ||
+            (!strncasecmp(mime.c_str(), "video/x-vnd.on2.vp8", 19)))
         {
             flags = OMXCodec::kSoftwareCodecsOnly;
         }
@@ -3770,6 +3806,7 @@ void ACodec::LoadedState::stateEntered() {
     mCodec->mDequeueCounter = 0;
     mCodec->mMetaDataBuffersToSubmit = 0;
     mCodec->mRepeatFrameDelayUs = -1ll;
+    mCodec->mIsConfiguredForAdaptivePlayback = false;
 
     if (mCodec->mShutdownInProgress) {
         bool keepComponentAllocated = mCodec->mKeepComponentAllocated;
@@ -3913,6 +3950,21 @@ void ACodec::LoadedState::onCreateInputSurface(
         if (err != OK) {
             ALOGE("[%s] Unable to configure option to repeat previous "
                   "frames (err %d)",
+                  mCodec->mComponentName.c_str(),
+                  err);
+        }
+    }
+
+    if (err == OK && mCodec->mMaxPtsGapUs > 0l) {
+        err = mCodec->mOMX->setInternalOption(
+                mCodec->mNode,
+                kPortIndexInput,
+                IOMX::INTERNAL_OPTION_MAX_TIMESTAMP_GAP,
+                &mCodec->mMaxPtsGapUs,
+                sizeof(mCodec->mMaxPtsGapUs));
+
+        if (err != OK) {
+            ALOGE("[%s] Unable to configure max timestamp gap (err %d)",
                   mCodec->mComponentName.c_str(),
                   err);
         }

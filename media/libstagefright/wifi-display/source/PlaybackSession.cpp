@@ -43,6 +43,10 @@
 #include <media/stagefright/NuMediaExtractor.h>
 #include <media/stagefright/SurfaceMediaSource.h>
 #include <media/stagefright/Utils.h>
+#include <ui/DisplayInfo.h>
+
+#include <gui/ISurfaceComposer.h>
+#include <gui/SurfaceComposerClient.h>
 
 #include <OMX_IVCommon.h>
 
@@ -342,7 +346,6 @@ bool WifiDisplaySource::PlaybackSession::Track::isSuspended() const {
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////
-
 WifiDisplaySource::PlaybackSession::PlaybackSession(
         const sp<ANetworkSession> &netSession,
         const sp<AMessage> &notify,
@@ -363,6 +366,7 @@ WifiDisplaySource::PlaybackSession::PlaybackSession(
       mPullExtractorGeneration(0),
       mFirstSampleTimeRealUs(-1ll),
       mFirstSampleTimeUs(-1ll) {
+    ALOGD(":PlaybackSession::PlaybackSession");
     if (path != NULL) {
         mMediaPath.setTo(path);
     }
@@ -495,7 +499,7 @@ void WifiDisplaySource::PlaybackSession::onMessageReceived(
                 CHECK(msg->findBuffer("accessUnit", &accessUnit));
 
                 const sp<Track> &track = mTracks.valueFor(trackIndex);
-
+                
                 status_t err = mMediaSender->queueAccessUnit(
                         track->mediaSenderTrackIndex(),
                         accessUnit);
@@ -514,7 +518,7 @@ void WifiDisplaySource::PlaybackSession::onMessageReceived(
 
                 const sp<Converter> &converter =
                     mTracks.valueAt(index)->converter();
-                looper()->unregisterHandler(converter->id());
+                mConvertLooper[trackIndex]->unregisterHandler(converter->id());
 
                 mTracks.removeItemsAt(index);
 
@@ -931,6 +935,12 @@ status_t WifiDisplaySource::PlaybackSession::addSource(
     sp<AMessage> notify;
 
     trackIndex = mTracks.size();
+	mConvertLooper[trackIndex] = new ALooper;
+    mConvertLooper[trackIndex]->setName("convert_looper");
+    mConvertLooper[trackIndex]->start(
+            false /* runOnCallingThread */,
+            false /* canCallJava */,
+            PRIORITY_AUDIO);
 
     sp<AMessage> format;
     status_t err = convertMetaDataToMessage(source->getFormat(), &format);
@@ -958,13 +968,13 @@ status_t WifiDisplaySource::PlaybackSession::addSource(
 
     sp<Converter> converter = new Converter(notify, codecLooper, format);
 
-    looper()->registerHandler(converter);
+    mConvertLooper[trackIndex]->registerHandler(converter);
 
     err = converter->init();
     if (err != OK) {
         ALOGE("%s converter returned err %d", isVideo ? "video" : "audio", err);
 
-        looper()->unregisterHandler(converter->id());
+        mConvertLooper[trackIndex]->unregisterHandler(converter->id());
         return err;
     }
 
@@ -1037,8 +1047,9 @@ status_t WifiDisplaySource::PlaybackSession::addVideoSource(
 
     source->setUseAbsoluteTimestamps();
 
+	ALOGD("width %d height %d",width,height);
     sp<RepeaterSource> videoSource =
-        new RepeaterSource(source, framesPerSecond);
+        new RepeaterSource(source,25.0 /* rateHz */,width,height);// framesPerSecond); jmj
 
     size_t numInputBuffers;
     status_t err = addSource(

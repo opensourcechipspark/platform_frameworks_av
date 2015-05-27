@@ -63,7 +63,6 @@ LOCAL_SHARED_LIBRARIES :=     \
     libui                     \
     libutils                  \
     libvideoeditor_osal       \
-    libvpu 			
 
 
 LOCAL_C_INCLUDES += \
@@ -72,8 +71,6 @@ LOCAL_C_INCLUDES += \
     $(TOP)/frameworks/av/media/libstagefright \
     $(TOP)/frameworks/av/media/libstagefright/include \
     $(TOP)/frameworks/av/media/libstagefright/rtsp \
-    $(TOP)/hardware/rk29/libyuvtorgb \
-    $(TOP)/hardware/rk29/libon2 \
     $(call include-path-for, corecg graphics) \
     $(TOP)/frameworks/av/libvideoeditor/osal/inc \
     $(TOP)/frameworks/av/libvideoeditor/vss/common/inc \
@@ -86,13 +83,6 @@ LOCAL_C_INCLUDES += \
     $(TOP)/frameworks/native/include/media/openmax \
     $(TOP)/frameworks/native/services/audioflinger
 
-ifeq ($(strip $(TARGET_BOARD_HARDWARE)),rk29board)
-LOCAL_C_INCLUDES += \
-    $(TOP)/hardware/rk29/libgralloc 
-else 
-LOCAL_C_INCLUDES += \
-    $(TOP)/hardware/rk29/libgralloc_ump 
-endif
 
 LOCAL_SHARED_LIBRARIES += libdl
 

@@ -31,6 +31,7 @@ typedef enum
     VPU_DEC                 = 0x1,
     VPU_PP                  = 0x2,
     VPU_DEC_PP              = 0x3,
+    VPU_DEC_HEVC            = 0x4,
     VPU_TYPE_BUTT           ,
 
 } VPU_CLIENT_TYPE;
@@ -99,6 +100,7 @@ RK_S32 VPUClientRelease(int socket);
 RK_S32 VPUClientSendReg(int socket, RK_U32 *regs, RK_U32 nregs);
 RK_S32 VPUClientWaitResult(int socket, RK_U32 *regs, RK_U32 nregs, VPU_CMD_TYPE *cmd, RK_S32 *len);
 RK_S32 VPUClientGetHwCfg(int socket, RK_U32 *cfg, RK_U32 cfg_size);
+RK_S32 VPUClientGetIOMMUStatus();
 
 void *vpu_service(void *);
 

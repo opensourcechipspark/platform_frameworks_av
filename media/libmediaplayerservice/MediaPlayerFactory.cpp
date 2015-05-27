@@ -31,6 +31,15 @@
 #include "StagefrightPlayer.h"
 #include "nuplayer/NuPlayerDriver.h"
 #include "ApePlayer.h"
+
+#if NUPLAYER_ENABLE_URL_CHECK
+#include "Urlcheck.h"
+#endif
+
+#ifdef USE_FFPLAYER
+#include "FFPlayer.h"
+#endif
+
 namespace android {
 
 Mutex MediaPlayerFactory::sLock;
@@ -67,7 +76,11 @@ player_type MediaPlayerFactory::getDefaultPlayerType() {
         return NU_PLAYER;
     }
 
+#ifdef USE_FFPLAYER
+    return FF_PLAYER;
+#else
     return STAGEFRIGHT_PLAYER;
+#endif
 }
 
 status_t MediaPlayerFactory::registerFactory(IFactory* factory,
@@ -85,6 +98,12 @@ void MediaPlayerFactory::unregisterFactory(player_type type) {
     Mutex::Autolock lock_(&sLock);                      \
                                                         \
     player_type ret = STAGEFRIGHT_PLAYER;               \
+  	char value_pro[PROPERTY_VALUE_MAX];					\
+		if(property_get("sys.sf_ffmpeg.switch", value_pro, NULL)){	\
+			if (atoi(value_pro) > 0){					\
+				ret =  FF_PLAYER;				\
+			}																													\
+	}	                                                \
     float bestScore = 0.0;                              \
                                                         \
     for (size_t i = 0; i < sFactoryMap.size(); ++i) {   \
@@ -107,6 +126,22 @@ void MediaPlayerFactory::unregisterFactory(player_type type) {
 
 player_type MediaPlayerFactory::getPlayerType(const sp<IMediaPlayer>& client,
                                               const char* url) {
+#if NUPLAYER_ENABLE_URL_CHECK
+//check localhost ,skip m3u8 check
+#ifndef USE_FFPLAYER
+
+	if(strncasecmp("http://localhost:", url, 17)){
+	    UrlCheckHelper* urlCheck = UrlCheckHelper::getInstance();
+	    if (urlCheck && urlCheck->isUrlRealM3U8(url)) {
+	        ALOGI("from libstagefright check, current url is NU_PLAYER");
+	        return NU_PLAYER;
+	    }
+	}
+
+#endif
+
+#endif
+
     GET_PLAYER_TYPE_IMPL(client, url);
 }
 
@@ -367,6 +402,35 @@ class ApePlayerFactory :
         return new ApePlayer();
     }
 };
+
+#ifdef USE_FFPLAYER
+class FFPlayerFactory :
+    public MediaPlayerFactory::IFactory {
+
+ public:
+    virtual float scoreFactory(const sp<IMediaPlayer>& client,
+                                       const char* url,
+                                       float curScore){
+        static const float kOurScore = 0.9;
+        if (!strncasecmp("http://", url, 7)
+                || !strncasecmp("https://", url, 8)
+                || !strncasecmp("rtsp://", url, 7)){
+            char value[PROPERTY_VALUE_MAX];
+            if((property_get("sys.cts_gts.status", value, NULL))
+                &&(strstr(value, "true"))){
+                return 0.0;
+            }
+            return kOurScore;
+        }
+        return 0.0;
+    }
+    virtual sp<MediaPlayerBase> createPlayer() {
+        ALOGI(" createFFPlayer");
+        return new FFPlayer();
+    }
+
+};
+#endif
 void MediaPlayerFactory::registerBuiltinFactories() {
     Mutex::Autolock lock_(&sLock);
 
@@ -378,6 +442,9 @@ void MediaPlayerFactory::registerBuiltinFactories() {
     registerFactory_l(new SonivoxPlayerFactory(), SONIVOX_PLAYER);
     registerFactory_l(new TestPlayerFactory(), TEST_PLAYER);
 	registerFactory_l(new ApePlayerFactory(),APE_PLAYER);
+#ifdef USE_FFPLAYER
+	registerFactory_l(new FFPlayerFactory(),FF_PLAYER);
+#endif
     sInitComplete = true;
 }
 

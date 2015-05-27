@@ -354,8 +354,8 @@ static VideoFrame *extractVideoFrameWithCodecFlags(
     VideoFrame *frame = new VideoFrame;
     frame->mWidth = crop_right - crop_left + 1;
     frame->mHeight = crop_bottom - crop_top + 1;
-    frame->mDisplayWidth = frame->mWidth;
-    frame->mDisplayHeight = frame->mHeight;
+    frame->mDisplayWidth = crop_right - crop_left;
+    frame->mDisplayHeight = crop_bottom - crop_top;
     frame->mSize = frame->mWidth * frame->mHeight * 2;
     frame->mData = new uint8_t[frame->mSize];
     frame->mRotationAngle = rotationAngle;
@@ -387,9 +387,22 @@ static VideoFrame *extractVideoFrameWithCodecFlags(
 		VPU_FRAME *YuvFrame =(VPU_FRAME*)buffer->data();
     	VPUMemLink(&YuvFrame->vpumem);
         VPUMemInvalidate(&YuvFrame->vpumem);
+        const char *mime;
+        int32_t vir_w =0, vir_h =0;
+
+        if ((trackMeta->findCString(kKeyMIMEType, &mime))) {
+            if (!strcasecmp(mime, MEDIA_MIMETYPE_VIDEO_HEVC)) {
+                vir_w = (((width + 255) & (~255)) | 256);
+                vir_h = ((height + 7) & (~7));
+            } else {
+                vir_w = ((width + 15) & (~15));
+                vir_h = ((height + 15) & (~15));
+            }
+        }
+
         err = converter.convert(
 				(const uint8_t *)YuvFrame->vpumem.vir_addr,
-				((width+15)&(~15)),((height+15)&(~15)),
+				vir_w, vir_h,
                 crop_left, crop_top, crop_right, crop_bottom,
                 frame->mData,
                 frame->mWidth,

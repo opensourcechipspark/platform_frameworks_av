@@ -31,7 +31,7 @@
 #include "include/avc_utils.h"
 
 namespace android {
-
+extern FILE* omx_txt;
 RTPSender::RTPSender(
         const sp<ANetworkSession> &netSession,
         const sp<AMessage> &notify)
@@ -184,7 +184,34 @@ status_t RTPSender::initAsync(
 status_t RTPSender::queueBuffer(
         const sp<ABuffer> &buffer, uint8_t packetType, PacketizationMode mode) {
     status_t err;
-
+    if(0)
+	{
+		int retrtptxt;
+		int32_t dummy1;
+		int64_t delayUs;
+		int64_t whenUs;
+		int64_t timeUs;
+       CHECK(buffer->meta()->findInt64("timeUs", &timeUs));
+		
+		if((retrtptxt = access("data/test/omx_txt_file",0)) == 0)//test_file!=NULL)
+		{	
+			int64_t sys_time= systemTime(SYSTEM_TIME_MONOTONIC) / 1000;  
+			
+			if(omx_txt == NULL)
+				omx_txt = fopen("data/test/omx_txt.txt","ab");
+			else
+			{
+				if(mode == PACKETIZATION_H264)
+				    fprintf(omx_txt,"Sender Video onDrainQueue time sys  %lld size %d\n",
+	  sys_time,	timeUs, buffer->size());
+				else
+					fprintf(omx_txt,"Sender Audio onDrainQueue time sys  %lld size %d\n",
+	  sys_time,	timeUs, buffer->size());
+				fflush(omx_txt);
+			}
+			
+		}
+	}
     switch (mode) {
         case PACKETIZATION_NONE:
             err = queueRawPacket(buffer, packetType);
@@ -293,12 +320,13 @@ status_t RTPSender::queueTSPackets(
 
         srcOffset += numTSPackets * 188;
         bool isLastPacket = (srcOffset == tsPackets->size());
-
-        status_t err = sendRTPPacket(
+     
+          
+          status_t err = sendRTPPacket(
                 udpPacket,
                 true /* storeInHistory */,
                 isLastPacket /* timeValid */,
-                timeUs);
+                timeUs,isLastPacket);
 
         if (err != OK) {
             return err;
@@ -460,10 +488,41 @@ status_t RTPSender::queueAVCBuffer(
 
 status_t RTPSender::sendRTPPacket(
         const sp<ABuffer> &buffer, bool storeInHistory,
-        bool timeValid, int64_t timeUs) {
+        bool timeValid, int64_t timeUs,int Last_sign) {
     CHECK(mRTPConnected);
 
-    status_t err = mNetSession->sendRequest(
+    if(0)
+	{
+       int retrtptxt;
+       int32_t dummy1;
+  		
+		if((retrtptxt = access("data/test/omx_txt_file",0)) == 0)//test_file!=NULL)
+		{	
+			int64_t sys_time = systemTime(SYSTEM_TIME_MONOTONIC) / 1000;  
+			
+			if(omx_txt == NULL)
+				omx_txt = fopen("data/test/omx_txt.txt","ab");
+			else
+			{
+				if(buffer->size() > 500)
+				fprintf(omx_txt,"Sender Video onDrainQueue time sys %lld %lld delta %lld  size %d\n",
+	  sys_time, timeUs, sys_time- timeUs, buffer->size());
+				else
+              fprintf(omx_txt,"Sender Audio onDrainQueue time sys %lld %lld delta %lld  size %d\n",
+	  sys_time, timeUs, sys_time- timeUs, buffer->size());
+				fflush(omx_txt);
+			}
+			
+		}
+	}
+    status_t err;
+    if(Last_sign)
+       err = mNetSession->sendRequest(
+            mRTPSessionID, buffer->data(), buffer->size(),
+            timeValid, timeUs);
+    else
+      
+       err = mNetSession->sendTsPacket(
             mRTPSessionID, buffer->data(), buffer->size(),
             timeValid, timeUs);
 
@@ -485,7 +544,7 @@ status_t RTPSender::sendRTPPacket(
         }
         mHistory.push_back(buffer);
     }
-
+    
     return OK;
 }
 

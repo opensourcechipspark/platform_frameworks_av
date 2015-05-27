@@ -34,6 +34,15 @@ struct OMXCodecObserver;
 struct CodecProfileLevel;
 class SkipCutBuffer;
 
+typedef enum _ROCKCHIP_VIDEO_CODINGTYPE_EXT {
+    OMX_VIDEO_CodingFLV1 = 0x01000000,       /**< Sorenson H.263 */
+    OMX_VIDEO_CodingDIVX3,                   /**< DIVX3 */
+    OMX_VIDEO_CodingVP6,                      /**< VP6 */
+    OMX_VIDEO_CodingVC1,                      /**< VP6 */
+    OMX_VIDEO_CodingHEVC,
+} ROCKCHIP_VIDEO_CODINGTYPE_EXT;
+
+
 struct OMXCodec : public MediaSource,
                   public MediaBufferObserver {
     enum CreationFlags {

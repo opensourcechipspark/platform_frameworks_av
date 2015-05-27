@@ -64,6 +64,7 @@ struct VideoFormats {
         kNumResolutionTypes,
     };
 
+    bool getNativeTypeAndIndex(ResolutionType *type, size_t *index, uint32_t nativeWidth, uint32_t nativeHeight);  // add by lance 2013.12.27
     void setNativeResolution(ResolutionType type, size_t index);
     void getNativeResolution(ResolutionType *type, size_t *index) const;
 

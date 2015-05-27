@@ -87,7 +87,8 @@ LOCAL_C_INCLUDES:= \
         $(TOP)/frameworks/av/media/libstagefright/libvpu/common/include \
         $(TOP)/frameworks/av/media/libstagefright/libvpu/common \
         $(TOP)/external/openssl/include \
-    	$(TOP)/frameworks/av/media/libstagefright/libvpu/common/include
+    	$(TOP)/frameworks/av/media/libstagefright/libvpu/common/include \
+	$(TOP)/hardware/rk29/libon2 
 
 LOCAL_SHARED_LIBRARIES := \
         libbinder \

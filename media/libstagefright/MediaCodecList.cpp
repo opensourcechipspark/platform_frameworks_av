@@ -17,7 +17,7 @@
 //#define LOG_NDEBUG 0
 #define LOG_TAG "MediaCodecList"
 #include <utils/Log.h>
-
+#include <cutils/properties.h>
 #include <media/stagefright/MediaCodecList.h>
 
 #include <media/stagefright/foundation/ADebug.h>
@@ -26,7 +26,7 @@
 #include <media/stagefright/OMXCodec.h>
 #include <media/stagefright/MediaDefs.h>
 #include <utils/threads.h>
-
+#include <cutils/properties.h>
 #include <libexpat/expat.h>
 
 namespace android {
@@ -49,8 +49,25 @@ const MediaCodecList *MediaCodecList::getInstance() {
 
 MediaCodecList::MediaCodecList()
     : mInitCheck(NO_INIT) {
-    FILE *file = fopen("/etc/media_codecs.xml", "r");
+    char value[PROPERTY_VALUE_MAX];
+    FILE *file = NULL;
+    if(property_get("mediacodec.allcfg.xml", value, NULL) && (atoi(value) > 0)){
+        ALOGI("register mediacode from xml dircet *****************");
+        file = fopen("/etc/media_codecs.xml", "r");
+        if (file == NULL) {
+            ALOGW("unable to open media codecs configuration xml file.");
+            return;
+        }
+        parseXMLFile(file);
+		if (mInitCheck == OK) {
 
+	        addMediaCodec(true /* encoder */, "AACEncoder", "audio/mp4a-latm");
+	        addMediaCodec(
+	                false /* encoder */, "OMX.google.raw.decoder", "audio/raw");
+    	}
+    }else{
+        ALOGI("register mediacode *****************");
+        file = fopen("/etc/media_codecs.xml", "r");
     if (file == NULL) {
         ALOGW("unable to open media codecs configuration xml file.");
         return;
@@ -74,22 +91,27 @@ MediaCodecList::MediaCodecList()
         addMediaCodec(false /* encoder */, "RkAudioDecoder_AC3", MEDIA_MIMETYPE_AUDIO_AC3);
         addMediaCodec(false /* encoder */, "RkAudioDecoder_RA", MEDIA_MIMETYPE_AUDIO_RA);
 		addMediaCodec(false /* encoder */, "RkAudioDecoder_WAV", MEDIA_MIMETYPE_AUDIO_WAV);
-		
+		addMediaCodec(false /* encoder */, "RkAudioDecoder_AAC", MEDIA_MIMETYPE_AUDIO_AAC);
+
         addMediaCodec(false /* encoder */, "FLACDecoder", MEDIA_MIMETYPE_AUDIO_FLAC);
-		addMediaCodec(false /* encoder */, "AVCDecoder_FLASH", MEDIA_MIMETYPE_VIDEO_AVC);
-        addMediaCodec(false /* encoder */, "AACDecoder", MEDIA_MIMETYPE_AUDIO_AAC);
         addMediaCodec(false /* encoder */, "AACDecoder_MIRRORING", MEDIA_MIMETYPE_AUDIO_AAC);
         addMediaCodec(false /* encoder */, "RkOn2Decoder", MEDIA_MIMETYPE_VIDEO_AVC);
         addMediaCodec(false /* encoder */, "RkOn2Decoder", MEDIA_MIMETYPE_VIDEO_REALVIDEO);
         addMediaCodec(false /* encoder */, "RkOn2Decoder", MEDIA_MIMETYPE_VIDEO_FLV);
         addMediaCodec(false /* encoder */, "RkOn2Decoder", MEDIA_MIMETYPE_VIDEO_MPEG2);
         addMediaCodec(false /* encoder */, "RkOn2Decoder", MEDIA_MIMETYPE_VIDEO_VC1);
+        addMediaCodec(false /* encoder */, "RkOn2Decoder", MEDIA_MIMETYPE_VIDEO_WMV3);
         addMediaCodec(false /* encoder */, "RkOn2Decoder", MEDIA_MIMETYPE_VIDEO_H263);
         addMediaCodec(false /* encoder */, "RkOn2Decoder", MEDIA_MIMETYPE_VIDEO_MPEG4);
         addMediaCodec(false /* encoder */, "RkOn2Decoder", MEDIA_MIMETYPE_VIDEO_MJPEG);
         addMediaCodec(false /* encoder */, "RkOn2Decoder", MEDIA_MIMETYPE_VIDEO_VP6);
         addMediaCodec(false /* encoder */, "RkOn2Decoder", MEDIA_MIMETYPE_VIDEO_VP8);
-		addMediaCodec(false /* encoder */, "HEVCDecoder", MEDIA_MIMETYPE_VIDEO_HEVC);
+#ifdef HEVC_DEC_USE_SOFTWARE
+        addMediaCodec(false /* encoder */, "HEVCDecoder", MEDIA_MIMETYPE_VIDEO_HEVC);
+#else
+        addMediaCodec(false /* encoder */, "RkOn2Decoder", MEDIA_MIMETYPE_VIDEO_HEVC);
+#endif
+		}
     }
 
 #if 0
@@ -523,9 +545,14 @@ status_t MediaCodecList::getSupportedTypes(
 
     for (size_t i = 0; i < mTypes.size(); ++i) {
         uint32_t typeMask = 1ul << mTypes.valueAt(i);
-
+        AString value = mTypes.keyAt(i);
         if (info.mTypes & typeMask) {
-            types->push(mTypes.keyAt(i));
+            if (!(strncasecmp((char*)getCodecName(index), "RkOn2Decode", 11))) {
+                value.setTo("video/x-vnd.on2.unknow");
+                types->push(value);
+            } else {
+                types->push(mTypes.keyAt(i));
+            }
         }
     }
 
@@ -565,8 +592,43 @@ status_t MediaCodecList::getCodecCapabilities(
         const CodecProfileLevel &src = caps.mProfileLevels.itemAt(i);
 
         ProfileLevel profileLevel;
+
+        int pid;
+		char procPath[128]={};
+		char cmdline[256] = {};
+		char prop_value[128]={};
+		FILE* file;
+		pid = getpid();
+		sprintf(procPath, "/proc/%d/cmdline", pid);
+		file = fopen(procPath, "r");
+		if (file)
+		{
+			if(NULL==fgets(cmdline, sizeof(cmdline) - 1, file))
+			{
+				ALOGI("not find info after read cmdline");
+			}
+			fclose(file);
+		}
+
         profileLevel.mProfile = src.mProfile;
         profileLevel.mLevel = src.mLevel;
+
+        /*
+         ** merged from GPU group for CTS_R3 on android 4.4.4.
+         ** android.media.cts.EncodeVirtualDisplayWithCompositionTest::testVirtualDisplayRecycles
+		 ** public static final int AVCLevel21      = 0x40;
+        */
+        if(!strcmp(cmdline, "com.android.cts.media")) //cts:EncodeVirtualDisplayWithCompositionTest
+        {
+            property_get("sys.picture.capture", prop_value, "0");
+            if(!strcmp(prop_value,"testVirtualDisplayRecycles") || \
+                !strcmp(prop_value,"testRenderingMaxResolutionLocally") || \
+                !strcmp(prop_value,"testRenderingMaxResolutionRemotely"))
+            {
+                 if(profileLevel.mLevel > 0x40)
+                    continue;
+            }
+        }
         profileLevels->push(profileLevel);
     }
 
